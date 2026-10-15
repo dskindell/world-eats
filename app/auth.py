@@ -1,4 +1,5 @@
-"""Field validation, password hashing, login lockout and client IPs (contract 1a, sections 2, 4 and 6)."""
+"""Field validation, password hashing, login lockout and client IPs (contract 1a, sections 2, 4 and 6;
+admin unlock from contract 1b)."""
 
 import base64
 import hashlib
@@ -242,3 +243,22 @@ class Lockout:
                     del entry.failures[:-self.limit]
                 elif outcome == SUCCEEDED and table is self.users:
                     entry.failures.clear()
+
+    def is_locked(self, user_key):
+        """True if the username has `limit` failures in the window (in-flight attempts don't count)."""
+        now = self.clock()
+        with self.lock:
+            entry = self.users.get(user_key)
+            if entry is None:
+                return False
+            return sum(1 for t in entry.failures if now - t < self.window) >= self.limit
+
+    def clear_user(self, user_key):
+        """Admin unlock, reset or delete: drops the username's failures; in-flight attempts are kept."""
+        with self.lock:
+            entry = self.users.get(user_key)
+            if entry is None:
+                return
+            entry.failures.clear()
+            if entry.in_flight == 0:
+                del self.users[user_key]

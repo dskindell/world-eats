@@ -20,7 +20,8 @@ class DisplayNameTests(ServerTestCase):
         resp = self.patch({"display_name": "  Cafe\u0301 Crew \t"})
         self.assertEqual(resp.status, 200)
         self.assertEqual(resp.json(), {"user": {"id": 1, "username": "admin", "display_name": "Caf\u00e9 Crew",
-                                                "is_admin": True}})
+                                                "is_admin": True,
+                                                "must_change_password": False}})
         self.assertEqual(self.session_user(self.token)["display_name"], "Caf\u00e9 Crew")
 
     def test_allowed_text(self):

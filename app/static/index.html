@@ -20,6 +20,7 @@
       </button>
       <div class="menu" id="user-menu" role="menu" aria-labelledby="menu-button" hidden>
         <a class="menu-item" role="menuitem" href="#/account">Account settings</a>
+        <a class="menu-item" role="menuitem" href="#/admin" id="menu-admin" hidden>Admin</a>
         <button type="button" class="menu-item" role="menuitem" id="menu-logout">Log out</button>
       </div>
     </div>
@@ -127,6 +128,71 @@
         <button type="button" class="btn btn-danger" id="delete-open">Delete account</button>
       </section>
     </section>
+
+    <section class="view" id="view-force-password" aria-labelledby="force-title" hidden>
+      <h1 id="force-title" tabindex="-1">Choose a new password</h1>
+      <p class="muted">Your password was set by an admin. Choose a new one to continue.</p>
+      <form class="card stack" id="force-password-form" method="post" novalidate>
+        <div class="field">
+          <label for="force-current">Temporary password</label>
+          <input id="force-current" name="current_password" type="password" autocomplete="current-password" required>
+        </div>
+        <div class="field">
+          <label for="force-new">New password</label>
+          <input id="force-new" name="new_password" type="password" autocomplete="new-password" required aria-describedby="force-new-hint">
+          <p class="hint" id="force-new-hint">12-128 characters</p>
+        </div>
+        <div class="field">
+          <label for="force-confirm">Confirm new password</label>
+          <input id="force-confirm" name="confirm_password" type="password" autocomplete="new-password" required>
+        </div>
+        <p class="form-error" role="alert" hidden></p>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </form>
+      <button type="button" class="btn" id="force-logout">Log out</button>
+    </section>
+
+    <section class="view" id="view-admin" aria-labelledby="admin-title" hidden>
+      <div class="view-head">
+        <h1 id="admin-title" tabindex="-1">Admin</h1>
+        <button type="button" class="btn btn-primary" id="add-user-open">Add user</button>
+      </div>
+      <ul class="user-list" id="admin-users" aria-labelledby="admin-title"></ul>
+    </section>
+
+    <section class="view" id="view-admin-user" aria-labelledby="admin-user-title" hidden>
+      <a class="back-link" href="#/admin">All users</a>
+      <h1 id="admin-user-title" tabindex="-1"></h1>
+      <dl class="card info details">
+        <div><dt>Username</dt><dd id="au-username"></dd></div>
+        <div><dt>Role</dt><dd id="au-role"></dd></div>
+        <div><dt>Status</dt><dd id="au-status"></dd></div>
+        <div><dt>Locked out</dt><dd id="au-locked"></dd></div>
+        <div><dt>Must change password</dt><dd id="au-must-change"></dd></div>
+        <div><dt>Created</dt><dd id="au-created"></dd></div>
+        <div><dt>Last active</dt><dd id="au-last-active"></dd></div>
+      </dl>
+
+      <section class="card" aria-labelledby="au-actions-title">
+        <h2 id="au-actions-title">Actions</h2>
+        <div class="action-list">
+          <button type="button" class="btn" id="au-edit-name">Edit display name</button>
+          <button type="button" class="btn" id="au-reset">Reset password</button>
+          <p class="self-note" id="au-reset-self"><a href="#/account">Change your own password in Account settings</a></p>
+          <button type="button" class="btn" id="au-unlock">Unlock</button>
+          <button type="button" class="btn" id="au-disable">Disable</button>
+          <button type="button" class="btn" id="au-enable">Enable</button>
+          <button type="button" class="btn" id="au-promote">Make admin</button>
+          <button type="button" class="btn" id="au-demote">Remove admin</button>
+        </div>
+      </section>
+
+      <section class="card card-danger" aria-labelledby="au-danger-title">
+        <h2 id="au-danger-title">Danger zone</h2>
+        <button type="button" class="btn btn-danger" id="au-delete">Delete account</button>
+        <p class="self-note" id="au-delete-self"><a href="#/account">Delete your own account in Account settings</a></p>
+      </section>
+    </section>
   </main>
 
   <dialog class="dialog" id="logout-all-dialog" aria-labelledby="logout-all-title">
@@ -153,6 +219,99 @@
       <div class="actions">
         <button type="button" class="btn" data-close>Cancel</button>
         <button type="submit" class="btn btn-danger">Delete my account</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="add-user-dialog" aria-labelledby="add-user-title">
+    <form class="stack" id="add-user-form" method="post" novalidate>
+      <h2 id="add-user-title">Add user</h2>
+      <div class="field">
+        <label for="add-username">Username</label>
+        <input id="add-username" name="username" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" required aria-describedby="add-username-hint">
+        <p class="hint" id="add-username-hint">3-32 characters: letters, digits, . _ -</p>
+      </div>
+      <div class="field">
+        <label for="add-display-name">Display name</label>
+        <input id="add-display-name" name="display_name" type="text" required>
+      </div>
+      <div class="field">
+        <label for="add-password">Temporary password</label>
+        <div class="input-row">
+          <input id="add-password" name="password" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" required aria-describedby="add-password-hint">
+          <button type="button" class="btn" data-generate="add-password">Generate</button>
+        </div>
+        <p class="hint" id="add-password-hint">12-128 characters. They'll be asked to change it when they log in. It expires after 7 days.</p>
+      </div>
+      <label class="check"><input type="checkbox" name="is_admin"> Admin</label>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Create user</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="edit-name-dialog" aria-labelledby="edit-name-title">
+    <form class="stack" id="edit-name-form" method="post" novalidate>
+      <h2 id="edit-name-title">Edit display name</h2>
+      <div class="field">
+        <label for="edit-display-name">Display name</label>
+        <input id="edit-display-name" name="display_name" type="text" required>
+      </div>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="reset-dialog" aria-labelledby="reset-title">
+    <form class="stack" id="reset-form" method="post" novalidate>
+      <h2 id="reset-title">Reset password</h2>
+      <p id="reset-text"></p>
+      <div class="field">
+        <label for="reset-password">Temporary password</label>
+        <div class="input-row">
+          <input id="reset-password" name="new_password" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" required aria-describedby="reset-password-hint">
+          <button type="button" class="btn" data-generate="reset-password">Generate</button>
+        </div>
+        <p class="hint" id="reset-password-hint">12-128 characters</p>
+      </div>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Reset password</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Shared by Disable, Enable, Make admin and Remove admin; app.js fills the text. -->
+  <dialog class="dialog" id="confirm-dialog" aria-labelledby="confirm-title">
+    <form class="stack" id="confirm-form" method="post" novalidate>
+      <h2 id="confirm-title"></h2>
+      <p id="confirm-text"></p>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="confirm-submit"></button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="admin-delete-dialog" aria-labelledby="admin-delete-title">
+    <form class="stack" id="admin-delete-form" method="post" novalidate>
+      <h2 id="admin-delete-title">Delete account</h2>
+      <p id="admin-delete-text"></p>
+      <div class="field">
+        <label for="admin-delete-confirm" id="admin-delete-label"></label>
+        <input id="admin-delete-confirm" name="confirm_username" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+      </div>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-danger" id="admin-delete-submit" disabled>Delete account</button>
       </div>
     </form>
   </dialog>

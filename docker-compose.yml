@@ -8,6 +8,12 @@ services:
     restart: unless-stopped
     # Run as the host user that owns ./data (the image default, 10001, can't write to it).
     user: "1000:1000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
     ports:
       - "7197:8080"
     environment:

@@ -44,6 +44,28 @@ The app serves plain HTTP; put your own reverse proxy in front for HTTPS.
 - Set `WORLD_EATS_TRUSTED_PROXIES` to the proxy's IP. Without it, every visitor appears to come from the proxy, so five wrong passwords from anyone lock out logins for everyone for 15 minutes.
 - Set `WORLD_EATS_SECURE_COOKIES=true`.
 
+## Security notes
+
+- **Give World Eats its own hostname.** Browsers don't keep cookies separate by port, so if you reach the app by IP address and port (e.g. `http://192.0.2.10:7197`), every other web service on that IP receives your World Eats login cookie. A compromised service there could use it to act as you, including as an admin. Use a dedicated hostname (and HTTPS) before you rely on the app, and before you create a second admin.
+- **Admins can reset any password, which gives them access to that account.** The user will notice, because they're logged out everywhere and their password stops working. (Planned: when self-service password recovery is added, admin resets will be removed.)
+
+## If no admin can log in
+
+Setup never reopens once an account exists, so if every admin is locked out (forgotten password, or a new admin's temporary password expired), reset one from the server. Replace `NAME` with the username. The command makes that account an enabled admin, logs it out everywhere, and sets a temporary password you type (12-128 characters, not shown) that must be changed at the next login:
+
+```bash
+docker exec -it world-eats python -c "
+import getpass, sqlite3, time, auth
+h = auth.PasswordHasher().hash(auth.require_new_password(getpass.getpass('Temporary password: ')))
+c = sqlite3.connect('/data/world-eats.db')
+n = c.execute('UPDATE users SET password_hash = ?, must_change_password = 1, temp_password_set_at = ?, disabled = 0, is_admin = 1 WHERE username = ? COLLATE NOCASE', (h, int(time.time()), 'NAME')).rowcount
+c.execute('DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = ? COLLATE NOCASE)', ('NAME',))
+c.commit(); print('updated' if n else 'no such user')
+"
+```
+
+If the admin is only locked out by too many wrong passwords, wait 15 minutes or restart the container instead.
+
 ## Login lockout
 
 Five wrong passwords for a username within 15 minutes lock that username for 15 minutes; the same limit applies per client IP. This is a deliberate trade-off: anyone who can reach the login page can keep a known username locked by typing wrong passwords. Wrong passwords typed in account settings (changing your password, deleting your account) count toward the same per-username limit. The lockout resets when the container restarts.

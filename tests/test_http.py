@@ -227,7 +227,7 @@ class BodyTests(ServerTestCase):
             "id": 99, "is_admin": False, "created_at": 0, "extra": [1, 2]})
         self.assertEqual(resp.status, 201)
         self.assertEqual(resp.json()["user"], {"id": 1, "username": "admin", "display_name": "Admin",
-                                               "is_admin": True})
+                                               "is_admin": True, "must_change_password": False})
 
     def test_get_with_body(self):
         for value in ("5", "abc", "00", "-0"):
@@ -352,7 +352,7 @@ class CatchAllTests(ServerTestCase):
     def test_handler_exception(self):
         def boom(req):
             raise RuntimeError("secret detail in /app/server.py SELECT * FROM users")
-        self.app.routes["/api/boom"] = {"GET": server.Route(boom, public=True)}
+        self.add_route("/api/boom", {"GET": server.Route(boom, public=True)})
         resp = self.request("GET", "/api/boom")
         self.assertEqual(resp.status, 500)
         self.assertEqual(resp.json(), {"error": "Internal error"})
@@ -363,7 +363,7 @@ class CatchAllTests(ServerTestCase):
         self.assertEqual(resp.headers["X-Frame-Options"], "DENY")
 
     def test_server_keeps_working_after_exception(self):
-        self.app.routes["/api/boom"] = {"GET": server.Route(lambda req: 1 / 0, public=True)}
+        self.add_route("/api/boom", {"GET": server.Route(lambda req: 1 / 0, public=True)})
         self.assertEqual(self.request("GET", "/api/boom").status, 500)
         self.assertEqual(self.request("GET", "/api/session").status, 200)
 
@@ -599,7 +599,7 @@ class RouteOptionTests(ServerTestCase):
             called.append(True)
             return 200, {"ok": True}
 
-        self.app.routes["/api/private"] = {"GET": server.Route(handler)}
+        self.add_route("/api/private", {"GET": server.Route(handler)})
         resp = self.request("GET", "/api/private")
         self.assertEqual(resp.status, 401)
         self.assertEqual(resp.error, "Not logged in")
@@ -609,10 +609,10 @@ class RouteOptionTests(ServerTestCase):
         self.assertEqual(called, [True])
 
     def test_only_the_four_public_routes(self):
-        public = {path for path, methods in server.ROUTES.items()
+        public = {pattern.pattern for pattern, methods in server.ROUTES
                   for route in methods.values() if route.public}
         self.assertEqual(public, {"/api/session", "/api/setup", "/api/login", "/api/logout"})
-        no_renew = {path for path, methods in server.ROUTES.items()
+        no_renew = {pattern.pattern for pattern, methods in server.ROUTES
                     for route in methods.values() if not route.renew}
         self.assertEqual(no_renew, {"/api/setup", "/api/login", "/api/logout"})
 
@@ -631,8 +631,9 @@ class RouteOptionTests(ServerTestCase):
             seen["keys"] = sorted(req.user.keys())
             return 200, {}
 
-        self.app.routes["/api/whoami"] = {"GET": server.Route(handler)}
+        self.add_route("/api/whoami", {"GET": server.Route(handler)})
         token = self.setup_admin()
         self.assertEqual(self.request("GET", "/api/whoami", token=token).status, 200)
         self.assertNotIn("password_hash", seen["keys"])
-        self.assertEqual(seen["keys"], ["display_name", "id", "is_admin", "last_used_at", "session_id", "username"])
+        self.assertEqual(seen["keys"], ["display_name", "id", "is_admin", "last_used_at", "must_change_password",
+                                        "session_id", "username"])

@@ -9,6 +9,7 @@ import hashlib
 import http.client
 import io
 import json
+import re
 import shutil
 import socket
 import sqlite3
@@ -89,6 +90,7 @@ class ServerTestCase(unittest.TestCase):
         env = {"WORLD_EATS_ALLOWED_HOSTS": "127.0.0.1,localhost", "DATA_DIR": self.data_dir}
         env.update(self.env)
         self.config = config.load_config(env)
+        self.prepare_data()
         self.app = server.App(
             self.config, address=("127.0.0.1", 0), static_dir=self.static_dir, hasher=fast_hasher(),
             clock=lambda: self.base_time + self.clock_offset, log_stream=self.log, **self.app_kwargs)
@@ -99,6 +101,9 @@ class ServerTestCase(unittest.TestCase):
         self.host = f"127.0.0.1:{self.port}"
         self.origin = f"http://{self.host}"
         self.cookie_name = self.config.cookie_name
+
+    def prepare_data(self):
+        """Override to put files in self.data_dir before the server starts (e.g. an old schema)."""
 
     def tearDown(self):
         self.app.shutdown()
@@ -161,6 +166,10 @@ class ServerTestCase(unittest.TestCase):
             lines.append(f"Host: {host}")
         lines += [f"{name}: {value}" for name, value in headers]
         return self.raw(("\r\n".join(lines) + "\r\n\r\n").encode("latin-1") + body)
+
+    def add_route(self, path, methods):
+        """Adds an exact-path test route ahead of the real ones."""
+        self.app.routes.insert(0, (re.compile(re.escape(path)), methods))
 
     def post_headers(self, length, content_type="application/json"):
         return [("Origin", self.origin), ("Content-Type", content_type), ("Content-Length", str(length))]

@@ -5,7 +5,8 @@ init_schema() runs, inside one BEGIN IMMEDIATE transaction, the statements of
 every version above the database's PRAGMA user_version, then records that
 version. Never edit a released version's statements; add a new version. Keep
 statements safe on existing data: CREATE ... IF NOT EXISTS, and add columns
-(with defaults) only after checking PRAGMA table_info.
+with add_column() (checks PRAGMA table_info first; NOT NULL columns need a default).
+A statement is either an SQL string or a callable taking the connection.
 
 Write transactions: only top-level request handlers open one (`with
 req.write():`). Helpers that write take the connection and assume the caller
@@ -13,11 +14,28 @@ already holds the transaction; they never call write() themselves. Nesting
 write() raises RuntimeError instead of deadlocking.
 """
 
+import re
 import sqlite3
 import threading
 from contextlib import contextmanager
 
 DB_NAME = "world-eats.db"
+
+IDENTIFIER_RE = re.compile(r"[a-z_]+")
+
+
+def add_column(table, column, declaration):
+    """A migration step that adds a column unless it already exists."""
+    if not (IDENTIFIER_RE.fullmatch(table) and IDENTIFIER_RE.fullmatch(column)):
+        raise ValueError("bad identifier in migration")
+
+    def run(conn):
+        existing = {row[0] for row in conn.execute("SELECT name FROM pragma_table_info(?)", (table,))}
+        if column not in existing:
+            # Identifiers and declaration are fixed strings from MIGRATIONS, never input.
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")  # security-lint: ok fixed identifiers from MIGRATIONS, checked against IDENTIFIER_RE
+    return run
+
 
 MIGRATIONS = [
     (1, [
@@ -38,6 +56,14 @@ MIGRATIONS = [
             expires_at INTEGER NOT NULL
         )""",
         "CREATE INDEX IF NOT EXISTS sessions_user_id ON sessions(user_id)",
+    ]),
+    (2, [
+        add_column("users", "disabled", "INTEGER NOT NULL DEFAULT 0"),
+        add_column("users", "must_change_password", "INTEGER NOT NULL DEFAULT 0"),
+        add_column("users", "last_active_at", "INTEGER"),
+        add_column("users", "temp_password_set_at", "INTEGER"),
+        "UPDATE users SET last_active_at = "
+        "(SELECT MAX(last_used_at) FROM sessions WHERE sessions.user_id = users.id)",
     ]),
 ]
 
@@ -82,7 +108,10 @@ def init_schema(path, migrations=MIGRATIONS):
                 if version <= current:
                     continue
                 for statement in statements:
-                    conn.execute(statement)
+                    if callable(statement):
+                        statement(conn)
+                    else:
+                        conn.execute(statement)
                 conn.execute("PRAGMA user_version = " + str(int(version)))  # security-lint: ok PRAGMA takes no ? parameters; int from MIGRATIONS, never input
         except BaseException:
             conn.execute("ROLLBACK")

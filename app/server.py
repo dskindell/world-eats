@@ -1,16 +1,25 @@
 """World Eats: pick a random country to eat from.
 
 Stdlib only (http.server + sqlite3). Feature 1a: first-visit setup, login,
-sessions and account settings. See .claude/specs/1a-login-basics.md.
+sessions and account settings; feature 1b: admin screen. See
+.claude/specs/1a-login-basics.md and 1b-admin-screen.md.
 
 Patterns for later features:
-- ROUTES maps an exact path to {method: Route(handler, ...options)}. Routes
-  need a logged-in user unless marked public=True: the dispatcher returns 401
-  before a non-public handler runs, and the handler can rely on req.user.
-  A handler takes the request handler object and returns (status, json-able object).
+- ROUTES is an ordered list of (compiled regex, {method: Route(handler, ...options)}),
+  matched with fullmatch against the raw path minus the query string; first
+  match wins. Build literal parts with re.escape and ids with ID (ASCII digits
+  only: never \\d, which matches other scripts' digits). A handler takes the
+  request handler object plus the regex groups as strings (int() them after the
+  match) and returns (status, json-able object).
+- Routes need a logged-in user unless marked public=True. For a non-public route
+  the dispatcher checks, in order: no session -> 401; must_change_password and
+  not allow_pending -> 403; admin=True and not an admin -> 403. The handler can
+  rely on req.user.
 - Raise ApiError(status, message) for any client-facing error; it becomes
   JSON {"error": message}. Field validators in auth raise auth.Invalid(message),
   which becomes a 400; call them in the contract's field order.
+- Admin writes call require_admin() first inside their write transaction (the
+  admin may have been demoted, disabled or logged out since the session loaded).
 - One SQLite connection per request (req.db()). Only top-level handlers open a
   write transaction, with `with req.write():` (app write lock + BEGIN IMMEDIATE);
   helpers take `conn` and run inside the caller's transaction. Nesting raises.
@@ -29,6 +38,7 @@ import os
 import re
 import secrets
 import socket
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -74,6 +84,7 @@ BODY_DEADLINE = 15
 SESSION_TTL = 2592000  # 30 days
 RENEW_AFTER = 3600
 MAX_COOKIE_VALUE = 100
+TEMP_PASSWORD_TTL = 604800  # 7 days
 
 # Generic texts for errors from the stdlib's parse_request() (its own messages can
 # echo the request) and for our own send_error() calls.
@@ -87,10 +98,11 @@ LOCKED_MSG = "Too many failed attempts. Try again in a few minutes."
 
 
 class ApiError(Exception):
-    def __init__(self, status, message):
+    def __init__(self, status, message, extra=None):
         super().__init__(message)
         self.status = status
         self.message = message
+        self.extra = extra or {}
 
 
 class _CloseConnection(Exception):
@@ -103,17 +115,59 @@ class Route(NamedTuple):
     handler: Callable
     public: bool = False  # False: 401 before the handler runs unless logged in
     renew: bool = True  # renew the session's expiry when it's used
+    admin: bool = False  # 403 unless the user is an admin
+    allow_pending: bool = False  # works while the user must change their password
 
 
 def user_json(row):
     return {"id": row["id"], "username": row["username"],
-            "display_name": row["display_name"], "is_admin": bool(row["is_admin"])}
+            "display_name": row["display_name"], "is_admin": bool(row["is_admin"]),
+            "must_change_password": bool(row["must_change_password"])}
+
+
+def temp_password_expired(row, now):
+    """Contract 1b §2: an admin-set password that hasn't been changed within 7 days."""
+    return (bool(row["must_change_password"]) and row["temp_password_set_at"] is not None
+            and now - row["temp_password_set_at"] >= TEMP_PASSWORD_TTL)
 
 
 def require_live_session(req, conn):
     """Inside a write transaction: 401 if this request's session was revoked meanwhile."""
     if conn.execute("SELECT 1 FROM sessions WHERE id = ?", (req.session_id,)).fetchone() is None:
         raise ApiError(401, "Not logged in")
+
+
+def require_admin(req, conn):
+    """Contract 1b §4: the caller is still a live, enabled admin with no pending password change.
+
+    First thing inside every admin write transaction, and as a read right before an unlock.
+    """
+    row = conn.execute(
+        "SELECT users.is_admin, users.disabled, users.must_change_password "
+        "FROM sessions JOIN users ON users.id = sessions.user_id "
+        "WHERE sessions.id = ? AND sessions.expires_at > ?",
+        (req.session_id, req.app.now())).fetchone()
+    if row is None:
+        raise ApiError(401, "Not logged in")
+    if not is_usable_admin(row):
+        raise ApiError(403, "Admins only")
+
+
+def is_usable_admin(row):
+    """An admin who can use the admin screen now: enabled, with no pending password change."""
+    return row["is_admin"] == 1 and row["disabled"] == 0 and row["must_change_password"] == 0
+
+
+def other_usable_admins(conn, user_id):
+    # A pending admin doesn't count: their temporary password may expire before they ever log in.
+    return conn.execute(
+        "SELECT COUNT(*) FROM users "
+        "WHERE is_admin = 1 AND disabled = 0 AND must_change_password = 0 AND id != ?",
+        (user_id,)).fetchone()[0]
+
+
+def is_last_usable_admin(conn, row):
+    return is_usable_admin(row) and other_usable_admins(conn, row["id"]) == 0
 
 
 def api_session(req):
@@ -133,17 +187,17 @@ def api_setup(req):
     now = req.app.now()
     with req.write():
         cur = conn.execute(
-            "INSERT INTO users (username, display_name, password_hash, is_admin, created_at) "
-            "SELECT ?, ?, ?, 1, ? WHERE NOT EXISTS (SELECT 1 FROM users)",
-            (username, display_name, password_hash, now))
+            "INSERT INTO users (username, display_name, password_hash, is_admin, created_at, last_active_at) "
+            "SELECT ?, ?, ?, 1, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)",
+            (username, display_name, password_hash, now, now))
         if cur.rowcount != 1:
             raise ApiError(409, "Setup is already complete")
         user_id = cur.lastrowid
         token = create_session(conn, user_id, now)
     req.issue_session(token)
     req.app.log(f"Setup completed by {username}")
-    return 201, {"user": user_json({"id": user_id, "username": username,
-                                    "display_name": display_name, "is_admin": 1})}
+    return 201, {"user": user_json({"id": user_id, "username": username, "display_name": display_name,
+                                    "is_admin": 1, "must_change_password": 0})}
 
 
 def api_login(req):
@@ -162,21 +216,32 @@ def api_login(req):
         user = None
         if user_key is not None:
             user = conn.execute(
-                "SELECT id, username, display_name, is_admin, password_hash FROM users "
-                "WHERE username = ?", (username,)).fetchone()
+                "SELECT id, username, display_name, is_admin, must_change_password, disabled, "
+                "temp_password_set_at, password_hash FROM users WHERE username = ?", (username,)).fetchone()
         if user is not None and auth.usable_password(password):
             ok = req.app.hasher.verify(password, user["password_hash"])
+            # A disabled account or an expired temporary password is a wrong password,
+            # after the same hashing work.
+            ok = ok and not user["disabled"] and not temp_password_expired(user, req.app.now())
         else:
             ok = req.app.hasher.burn(password)
-        outcome = auth.SUCCEEDED if ok else auth.FAILED
+        if not ok:
+            outcome = auth.FAILED
+            raise ApiError(401, "Wrong username or password")
+        now = req.app.now()
+        with req.write():
+            # An admin may have reset or disabled the account while the password was hashing.
+            # Refused here, the attempt is NO_RESULT: no failure added, none cleared.
+            current = conn.execute("SELECT password_hash, disabled FROM users WHERE id = ?",
+                                   (user["id"],)).fetchone()
+            if current is None or current["password_hash"] != user["password_hash"] or current["disabled"]:
+                raise ApiError(401, "Wrong username or password")
+            conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
+            token = create_session(conn, user["id"], now)
+            conn.execute("UPDATE users SET last_active_at = ? WHERE id = ?", (now, user["id"]))
+        outcome = auth.SUCCEEDED
     finally:
         lockout.finish(user_key, ip, outcome)
-    if not ok:
-        raise ApiError(401, "Wrong username or password")
-    now = req.app.now()
-    with req.write():
-        conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
-        token = create_session(conn, user["id"], now)
     req.issue_session(token)
     return 200, {"user": user_json(user)}
 
@@ -203,7 +268,9 @@ def check_own_password(req, password, wrong_message):
 
     Returns the stored hash that was verified, for a conditional write afterwards.
     """
-    row = req.db().execute("SELECT password_hash FROM users WHERE id = ?", (req.user["id"],)).fetchone()
+    row = req.db().execute(
+        "SELECT password_hash, must_change_password, temp_password_set_at FROM users WHERE id = ?",
+        (req.user["id"],)).fetchone()
     if row is None:
         raise ApiError(401, "Not logged in")
     key = req.user["username"].lower()
@@ -214,6 +281,7 @@ def check_own_password(req, password, wrong_message):
     try:
         if auth.usable_password(password):
             ok = req.app.hasher.verify(password, row["password_hash"])
+            ok = ok and not temp_password_expired(row, req.app.now())
         else:
             ok = req.app.hasher.burn(password)
         outcome = auth.SUCCEEDED if ok else auth.FAILED
@@ -226,14 +294,20 @@ def check_own_password(req, password, wrong_message):
 
 def api_change_password(req):
     new_password = auth.require_new_password(req.body.get("new_password"))
-    verified_hash = check_own_password(req, req.body.get("current_password"), "Current password is wrong")
+    current_password = req.body.get("current_password")
+    verified_hash = check_own_password(req, current_password, "Current password is wrong")
+    # Both values come from the client, so this reveals nothing about the stored password;
+    # it stops a user "changing" back to a temporary password the admin knows.
+    if new_password == current_password:
+        raise ApiError(400, "New password must be different from the current one")
     new_hash = req.app.hasher.hash(new_password)
     user_id = req.user["id"]
     with req.write():
         conn = req.db()
         require_live_session(req, conn)
-        cur = conn.execute("UPDATE users SET password_hash = ? WHERE id = ? AND password_hash = ?",
-                           (new_hash, user_id, verified_hash))
+        cur = conn.execute(
+            "UPDATE users SET password_hash = ?, must_change_password = 0, temp_password_set_at = NULL "
+            "WHERE id = ? AND password_hash = ?", (new_hash, user_id, verified_hash))
         if cur.rowcount != 1:
             raise ApiError(403, "Current password is wrong")
         conn.execute("DELETE FROM sessions WHERE user_id = ? AND id != ?", (user_id, req.session_id))
@@ -255,10 +329,9 @@ def api_delete_account(req):
     with req.write():
         conn = req.db()
         require_live_session(req, conn)
-        row = conn.execute("SELECT is_admin FROM users WHERE id = ?", (user_id,)).fetchone()
-        others = conn.execute(
-            "SELECT COUNT(*) FROM users WHERE is_admin = 1 AND id != ?", (user_id,)).fetchone()[0]
-        if row is not None and row["is_admin"] and others == 0:
+        row = conn.execute("SELECT id, is_admin, disabled, must_change_password FROM users WHERE id = ?",
+                           (user_id,)).fetchone()
+        if row is not None and is_last_usable_admin(conn, row):
             raise ApiError(409, "You're the only admin, so this account can't be deleted")
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
@@ -266,17 +339,226 @@ def api_delete_account(req):
     return 200, {"ok": True}
 
 
+# --- Admin endpoints (contract 1b, section 6) ---
+
+# Named columns for the admin user object (never SELECT *); fixed strings, no input.
+ADMIN_USER_SELECT = ("SELECT id, username, display_name, is_admin, disabled, must_change_password, "
+                     "temp_password_set_at, created_at, last_active_at FROM users")
+FIND_USER_SQL = ADMIN_USER_SELECT + " WHERE id = ?"
+LIST_USERS_SQL = ADMIN_USER_SELECT + " ORDER BY username COLLATE NOCASE"
+
+
+def find_user(conn, user_id):
+    return conn.execute(FIND_USER_SQL, (user_id,)).fetchone()
+
+
+def require_user(conn, user_id):
+    row = find_user(conn, user_id)
+    if row is None:
+        raise ApiError(404, "User not found")
+    return row
+
+
+def admin_user_json(req, row):
+    return {"id": row["id"], "username": row["username"], "display_name": row["display_name"],
+            "is_admin": bool(row["is_admin"]), "disabled": bool(row["disabled"]),
+            "locked": req.app.lockout.is_locked(row["username"].lower()),
+            "must_change_password": bool(row["must_change_password"]),
+            "temp_password_expired": temp_password_expired(row, req.app.now()),
+            "created_at": row["created_at"], "last_active_at": row["last_active_at"]}
+
+
+def log_admin_action(req, message):
+    """`message` names the target with log_safe(); the admin's username is appended."""
+    req.app.log(f"{message} by {log_safe(req.user['username'])}")
+
+
+def api_admin_users(req):
+    rows = req.db().execute(LIST_USERS_SQL).fetchall()
+    return 200, {"users": [admin_user_json(req, row) for row in rows]}
+
+
+def api_admin_create_user(req):
+    username = auth.require_username(req.body.get("username"))
+    display_name = auth.clean_display_name(req.body.get("display_name"))
+    password = auth.require_new_password(req.body.get("password"))
+    is_admin = req.body.get("is_admin", False)
+    if type(is_admin) is not bool:
+        raise ApiError(400, "is_admin must be true or false")
+    conn = req.db()
+    if conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
+        raise ApiError(409, "That username is taken")
+    password_hash = req.app.hasher.hash(password)
+    now = req.app.now()
+    with req.write():
+        require_admin(req, conn)
+        try:
+            cur = conn.execute(
+                "INSERT INTO users (username, display_name, password_hash, is_admin, created_at, disabled, "
+                "must_change_password, temp_password_set_at, last_active_at) "
+                "VALUES (?, ?, ?, ?, ?, 0, 1, ?, NULL)",
+                (username, display_name, password_hash, int(is_admin), now, now))
+        except sqlite3.IntegrityError:
+            raise ApiError(409, "That username is taken") from None
+        row = find_user(conn, cur.lastrowid)
+    log_admin_action(req, f"User {log_safe(username)} created")
+    return 201, {"user": admin_user_json(req, row)}
+
+
+def api_admin_update_user(req, user_id):
+    if "display_name" not in req.body:
+        raise ApiError(400, "Nothing to update")
+    display_name = auth.clean_display_name(req.body["display_name"])
+    user_id = int(user_id)
+    conn = req.db()
+    with req.write():
+        require_admin(req, conn)
+        cur = conn.execute("UPDATE users SET display_name = ? WHERE id = ?", (display_name, user_id))
+        if cur.rowcount != 1:
+            raise ApiError(404, "User not found")
+        row = find_user(conn, user_id)
+    return 200, {"user": admin_user_json(req, row)}
+
+
+def api_admin_reset_password(req, user_id):
+    user_id = int(user_id)
+    if user_id == req.user["id"]:
+        raise ApiError(403, "Change your own password in Account settings")
+    new_password = auth.require_new_password(req.body.get("new_password"))
+    conn = req.db()
+    require_user(conn, user_id)
+    password_hash = req.app.hasher.hash(new_password)
+    now = req.app.now()
+    with req.write():
+        require_admin(req, conn)
+        cur = conn.execute(
+            "UPDATE users SET password_hash = ?, must_change_password = 1, temp_password_set_at = ? "
+            "WHERE id = ?", (password_hash, now, user_id))
+        if cur.rowcount != 1:
+            raise ApiError(404, "User not found")
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        row = find_user(conn, user_id)
+    req.app.lockout.clear_user(row["username"].lower())
+    log_admin_action(req, f"Password reset for {log_safe(row['username'])}")
+    return 200, {"user": admin_user_json(req, row)}
+
+
+def api_admin_disable(req, user_id):
+    user_id = int(user_id)
+    if user_id == req.user["id"]:
+        raise ApiError(403, "You can't disable your own account")
+    conn = req.db()
+    with req.write():
+        require_admin(req, conn)
+        row = require_user(conn, user_id)
+        if is_last_usable_admin(conn, row):
+            raise ApiError(409, "This is the last admin, so it can't be disabled")
+        conn.execute("UPDATE users SET disabled = 1 WHERE id = ?", (user_id,))
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        row = find_user(conn, user_id)
+    log_admin_action(req, f"User {log_safe(row['username'])} disabled")
+    return 200, {"user": admin_user_json(req, row)}
+
+
+def set_user_flag(req, user_id, sql):
+    """Enable and promote: a flag change with no extra rules. `sql` is a fixed UPDATE ... WHERE id = ?."""
+    conn = req.db()
+    with req.write():
+        require_admin(req, conn)
+        require_user(conn, user_id)
+        conn.execute(sql, (user_id,))
+        return find_user(conn, user_id)
+
+
+def api_admin_enable(req, user_id):
+    row = set_user_flag(req, int(user_id), "UPDATE users SET disabled = 0 WHERE id = ?")
+    log_admin_action(req, f"User {log_safe(row['username'])} enabled")
+    return 200, {"user": admin_user_json(req, row)}
+
+
+def api_admin_promote(req, user_id):
+    row = set_user_flag(req, int(user_id), "UPDATE users SET is_admin = 1 WHERE id = ?")
+    log_admin_action(req, f"User {log_safe(row['username'])} promoted")
+    return 200, {"user": admin_user_json(req, row)}
+
+
+def api_admin_demote(req, user_id):
+    user_id = int(user_id)
+    conn = req.db()
+    with req.write():
+        require_admin(req, conn)
+        row = require_user(conn, user_id)
+        if is_last_usable_admin(conn, row):
+            raise ApiError(409, "You're the only admin, so you can't remove your own admin rights")
+        conn.execute("UPDATE users SET is_admin = 0 WHERE id = ?", (user_id,))
+        row = find_user(conn, user_id)
+    log_admin_action(req, f"User {log_safe(row['username'])} demoted")
+    return 200, {"user": admin_user_json(req, row)}
+
+
+def api_admin_unlock(req, user_id):
+    conn = req.db()
+    row = require_user(conn, int(user_id))
+    # The re-check is a plain read (unlock writes no rows), run immediately before the
+    # clear as the contract asks, so it comes after the 404 lookup rather than before it.
+    require_admin(req, conn)
+    req.app.lockout.clear_user(row["username"].lower())
+    return 200, {"user": admin_user_json(req, row)}
+
+
+def api_admin_delete(req, user_id):
+    user_id = int(user_id)
+    if user_id == req.user["id"]:
+        raise ApiError(403, "Delete your own account in Account settings")
+    confirm = req.body.get("confirm_username")
+    conn = req.db()
+    with req.write():
+        require_admin(req, conn)
+        row = require_user(conn, user_id)
+        if not isinstance(confirm, str) or confirm.lower() != row["username"].lower():
+            raise ApiError(400, "Type the username to confirm")
+        if is_last_usable_admin(conn, row):
+            raise ApiError(409, "This is the last admin, so it can't be deleted")
+        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    req.app.lockout.clear_user(row["username"].lower())
+    log_admin_action(req, f"User {log_safe(row['username'])} deleted")
+    return 200, {"ok": True}
+
+
+def literal(path):
+    return re.escape(path)
+
+
+ID = "([1-9][0-9]{0,9})"  # ASCII digits only; int() is applied after the match
+ADMIN_USER = literal("/api/admin/users/") + ID
+
+
+def admin_route(handler):
+    return Route(handler, admin=True)
+
+
 # Setup and login ignore any incoming session, and logout ends it, so none renew.
-ROUTES = {
-    "/api/session": {"GET": Route(api_session, public=True)},
-    "/api/setup": {"POST": Route(api_setup, public=True, renew=False)},
-    "/api/login": {"POST": Route(api_login, public=True, renew=False)},
-    "/api/logout": {"POST": Route(api_logout, public=True, renew=False)},
-    "/api/account": {"PATCH": Route(api_update_account)},
-    "/api/account/password": {"POST": Route(api_change_password)},
-    "/api/account/logout-everywhere": {"POST": Route(api_logout_everywhere)},
-    "/api/account/delete": {"POST": Route(api_delete_account)},
-}
+ROUTES = [(re.compile(pattern), methods) for pattern, methods in [
+    (literal("/api/session"), {"GET": Route(api_session, public=True)}),
+    (literal("/api/setup"), {"POST": Route(api_setup, public=True, renew=False)}),
+    (literal("/api/login"), {"POST": Route(api_login, public=True, renew=False)}),
+    (literal("/api/logout"), {"POST": Route(api_logout, public=True, renew=False)}),
+    (literal("/api/account"), {"PATCH": Route(api_update_account)}),
+    (literal("/api/account/password"), {"POST": Route(api_change_password, allow_pending=True)}),
+    (literal("/api/account/logout-everywhere"), {"POST": Route(api_logout_everywhere, allow_pending=True)}),
+    (literal("/api/account/delete"), {"POST": Route(api_delete_account)}),
+    (literal("/api/admin/users"), {"GET": admin_route(api_admin_users),
+                                   "POST": admin_route(api_admin_create_user)}),
+    (ADMIN_USER, {"PATCH": admin_route(api_admin_update_user)}),
+    (ADMIN_USER + literal("/password"), {"POST": admin_route(api_admin_reset_password)}),
+    (ADMIN_USER + literal("/disable"), {"POST": admin_route(api_admin_disable)}),
+    (ADMIN_USER + literal("/enable"), {"POST": admin_route(api_admin_enable)}),
+    (ADMIN_USER + literal("/promote"), {"POST": admin_route(api_admin_promote)}),
+    (ADMIN_USER + literal("/demote"), {"POST": admin_route(api_admin_demote)}),
+    (ADMIN_USER + literal("/unlock"), {"POST": admin_route(api_admin_unlock)}),
+    (ADMIN_USER + literal("/delete"), {"POST": admin_route(api_admin_delete)}),
+]]
 
 
 # --- Sessions (contract section 5) ---
@@ -438,7 +720,7 @@ class Handler(BaseHTTPRequestHandler):
         except _CloseConnection:
             self.close_connection = True
         except ApiError as e:
-            self.send_json(e.status, {"error": e.message})
+            self.send_json(e.status, {"error": e.message, **e.extra})
         except auth.Invalid as e:
             self.send_json(400, {"error": str(e)})
         except auth.Busy:
@@ -470,13 +752,9 @@ class Handler(BaseHTTPRequestHandler):
         path = self.raw_path.split("?", 1)[0]
         writes = method in ("POST", "PATCH")
         route = None
+        args = ()
         if path.startswith("/api/"):
-            methods = self.app.routes.get(path)
-            if methods is None:
-                raise ApiError(404, "Not found")
-            route = methods.get("GET" if method == "HEAD" else method)
-            if route is None:
-                raise ApiError(405, "Method not allowed")
+            route, args = self.find_route(path, method)
         elif writes:
             raise ApiError(405, "Method not allowed")
 
@@ -492,10 +770,27 @@ class Handler(BaseHTTPRequestHandler):
             self.serve_static(path)
             return
         self.load_session(renew=route.renew)
-        if not route.public and self.user is None:
-            raise ApiError(401, "Not logged in")
-        status, payload = route.handler(self)
+        if not route.public:
+            if self.user is None:
+                raise ApiError(401, "Not logged in")
+            if self.user["must_change_password"] and not route.allow_pending:
+                raise ApiError(403, "You must change your password first", {"password_change_required": True})
+            if route.admin and not self.user["is_admin"]:
+                raise ApiError(403, "Admins only")
+        status, payload = route.handler(self, *args)
         self.send_json(status, payload)
+
+    def find_route(self, path, method):
+        """The first route whose pattern matches the whole path: (Route, path groups), or 404/405."""
+        for pattern, methods in self.app.routes:
+            match = pattern.fullmatch(path)
+            if match is None:
+                continue
+            route = methods.get("GET" if method == "HEAD" else method)
+            if route is None:
+                raise ApiError(405, "Method not allowed")
+            return route, match.groups()
+        raise ApiError(404, "Not found")
 
     def read_json_body(self, host):
         origin = self.headers.get("Origin")
@@ -564,9 +859,9 @@ class Handler(BaseHTTPRequestHandler):
             now = self.app.now()
             row = self.db().execute(
                 "SELECT sessions.id AS session_id, sessions.last_used_at, users.id, users.username, "
-                "users.display_name, users.is_admin "
+                "users.display_name, users.is_admin, users.must_change_password "
                 "FROM sessions JOIN users ON users.id = sessions.user_id "
-                "WHERE sessions.token_hash = ? AND sessions.expires_at > ?",
+                "WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND users.disabled = 0",
                 (token_hash(token), now)).fetchone()
         if row is None:
             self.clear_session_cookie()
@@ -575,9 +870,11 @@ class Handler(BaseHTTPRequestHandler):
         self.session_id = row["session_id"]
         if renew and now - row["last_used_at"] >= RENEW_AFTER:
             with self.write():
-                self.db().execute(
+                conn = self.db()
+                conn.execute(
                     "UPDATE sessions SET last_used_at = ?, expires_at = ? WHERE id = ?",
                     (now, now + SESSION_TTL, self.session_id))
+                conn.execute("UPDATE users SET last_active_at = ? WHERE id = ?", (now, row["id"]))
             self.cookie_out = self.session_cookie(token, SESSION_TTL)
 
     def session_cookie(self, value, max_age):
@@ -724,7 +1021,7 @@ class App(ThreadingHTTPServer):
         self.log_stream = log_stream if log_stream is not None else sys.stderr
         self.log_lock = threading.Lock()
         self.write_lock = db.WriteLock()
-        self.routes = {path: dict(methods) for path, methods in ROUTES.items()}
+        self.routes = [(pattern, dict(methods)) for pattern, methods in ROUTES]
         self.hasher = hasher if hasher is not None else auth.PasswordHasher()
         self.lockout = auth.Lockout(lambda: self.clock())
         self.connection_slots = threading.BoundedSemaphore(max_connections)
