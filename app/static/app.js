@@ -16,6 +16,17 @@ function esc(s) {
   }[c]));
 }
 
+const badgesHtml = (badges) => badges
+  .map(([text, cls]) => `<span class="badge ${cls}">${esc(text)}</span>`)
+  .join('');
+
+function textEl(tag, text, className = '') {
+  const el = document.createElement(tag);
+  el.textContent = text;
+  if (className) el.className = className;
+  return el;
+}
+
 class ApiError extends Error {
   constructor(message, status) {
     super(message);
@@ -114,12 +125,16 @@ function checkUsername(value) {
   if (!USERNAME_RE.test(value)) fail('Username must be 3-32 characters: letters, digits, . _ -');
 }
 
-function checkDisplayName(value) {
+// Display names and passport names share one rule set, with different messages.
+function checkName(value, label) {
   const name = value.normalize('NFC').trim();
   const n = codePoints(name);
-  if (n < 1 || n > 50) fail('Display name must be 1-50 characters');
-  if (BAD_NAME_CHAR_RE.test(name)) fail("Display name contains characters that aren't allowed");
+  if (n < 1 || n > 50) fail(`${label} must be 1-50 characters`);
+  if (BAD_NAME_CHAR_RE.test(name)) fail(`${label} contains characters that aren't allowed`);
 }
+
+const checkDisplayName = (value) => checkName(value, 'Display name');
+const checkPassportName = (value) => checkName(value, 'Passport name');
 
 function checkNewPassword(value) {
   const n = codePoints(value);
@@ -128,15 +143,18 @@ function checkNewPassword(value) {
 
 // ---- Views and routing ----
 
-const VIEWS = ['loading', 'setup', 'login', 'force-password', 'home', 'account', 'admin', 'admin-user'];
-const TOPBAR_VIEWS = ['home', 'account', 'admin', 'admin-user'];
-// User ids: one pattern for both the route table and every id check.
+const VIEWS = ['loading', 'setup', 'login', 'force-password', 'passports', 'passport', 'account', 'admin', 'admin-user'];
+// 'loading' keeps the top bar while a logged-in route loads (it's hidden with no user).
+const TOPBAR_VIEWS = ['loading', 'passports', 'passport', 'account', 'admin', 'admin-user'];
+// User and passport ids: one pattern for the route table and every id check.
 const ID_PATTERN = '[1-9][0-9]{0,9}';
 const ID_RE = new RegExp(`^${ID_PATTERN}$`);
 
 // Ordered hash routes; the first match wins. Anything unmatched goes to #/.
 const ROUTES = [
   { re: /^#\/$/, enter: enterHome },
+  { re: /^#\/passports$/, enter: enterPassports },
+  { re: new RegExp(`^#/passports/(${ID_PATTERN})$`), enter: enterPassport },
   { re: /^#\/account$/, enter: enterAccount },
   { re: /^#\/admin$/, admin: true, enter: enterAdmin },
   { re: new RegExp(`^#/admin/users/(${ID_PATTERN})$`), admin: true, enter: enterAdminUser },
@@ -148,6 +166,9 @@ let routeToken = 0;
 let sessionLoaded = false;
 let sessionPending = false;
 
+// False until the first real (non-loading) view has been shown.
+let contentShown = false;
+
 function showView(name) {
   const previous = currentView;
   currentView = name;
@@ -158,7 +179,8 @@ function showView(name) {
   view.querySelectorAll('.form-error').forEach((el) => { el.textContent = ''; el.hidden = true; });
   // Move focus to the new heading so keyboard and screen-reader users land
   // in the new view; skipped on first load to avoid stealing focus.
-  if (previous && previous !== 'loading') view.querySelector('h1')?.focus();
+  if (contentShown) view.querySelector('h1')?.focus();
+  if (name !== 'loading') contentShown = true;
 }
 
 function render() {
@@ -171,18 +193,46 @@ function render() {
   updateUserText();
   const hash = location.hash;
   const route = ROUTES.find((r) => r.re.test(hash));
-  if (!route || (route.admin && !state.user.is_admin)) return enterHome();
+  if (!route || (route.admin && !state.user.is_admin)) {
+    history.replaceState(null, '', '#/');
+    return enterHome(null, routeToken);
+  }
   return route.enter(hash.match(route.re)[1], routeToken);
 }
 
-function enterHome() {
-  if (location.hash !== '#/') history.replaceState(null, '', '#/');
-  showView('home');
+function showLoading() {
+  $('loading-text').hidden = false;
+  $('load-error').hidden = true;
+  $('load-retry').hidden = true;
+  showView('loading');
 }
 
-function enterAccount() {
+// Home is the default passport. Replace (not push) the hash so Back doesn't
+// return to #/ and bounce forward again.
+async function enterHome(_param, token) {
+  showLoading();
+  let list;
+  try {
+    list = await api('GET', '/api/passports');
+  } catch (err) {
+    if (token === routeToken) showLoadError(err.message);
+    return;
+  }
+  if (token !== routeToken) return;
+  const id = String(list.default_passport_id);
+  if (!ID_RE.test(id)) {
+    history.replaceState(null, '', '#/passports');
+    enterPassports(null, token);
+    return;
+  }
+  history.replaceState(null, '', `#/passports/${id}`);
+  enterPassport(id, token);
+}
+
+function enterAccount(_param, token) {
   fillAccount();
   showView('account');
+  loadDefaultSelect(token);
 }
 
 // Goes to a hash; renders directly if we're already there (no hashchange).
@@ -191,13 +241,19 @@ function navigate(hash) {
   else location.hash = hash;
 }
 
+// Goes to a hash without leaving the current entry in history (used when the
+// current page is a passport that no longer exists for this user).
+function replaceRoute(hash) {
+  history.replaceState(null, '', hash);
+  render();
+}
+
 function closeDialogs() {
   document.querySelectorAll('dialog[open]').forEach((d) => d.close());
 }
 
 function updateUserText() {
   $('menu-name').textContent = state.user.display_name;
-  $('home-name').textContent = state.user.display_name;
   $('account-username').textContent = state.user.username;
   $('menu-admin').hidden = !state.user.is_admin;
 }
@@ -222,6 +278,7 @@ function clearSessionUi() {
   closeMenu();
   closeDialogs();
   document.querySelectorAll('form').forEach((f) => f.reset());
+  clearPassportUi();
 }
 
 function onSessionLost() {
@@ -264,10 +321,7 @@ function showLoadError(message) {
 
 async function loadSession() {
   sessionPending = true;
-  showView('loading');
-  $('loading-text').hidden = false;
-  $('load-error').hidden = true;
-  $('load-retry').hidden = true;
+  showLoading();
   try {
     const data = await api('GET', '/api/session');
     state.setupRequired = data.setup_required === true;
@@ -408,12 +462,17 @@ bindForm($('password-form'), async (form) => {
   toast('Password changed. Other devices were logged out.');
 });
 
+// Bumped whenever a dialog opens a load or closes, so a slow load for a
+// dialog that has since closed (or reopened) is ignored.
+let dialogToken = 0;
+
 // Wires Cancel, and resets the form on every close (Cancel, Escape, success,
 // navigation) so no password lingers.
 function setupDialog(dialogId) {
   const dialog = $(dialogId);
   dialog.querySelector('[data-close]').addEventListener('click', () => dialog.close());
   dialog.addEventListener('close', () => {
+    dialogToken += 1;
     const form = dialog.querySelector('form');
     form.reset();
     setError(form, '');
@@ -431,7 +490,70 @@ function bindDialog(openButtonId, dialogId, onOpen) {
 }
 
 bindDialog('logout-all-open', 'logout-all-dialog');
-bindDialog('delete-open', 'delete-dialog');
+bindDialog('delete-open', 'delete-dialog', loadDeletePreview);
+
+bindForm($('default-form'), async () => {
+  const select = $('default-passport');
+  if (select.disabled || !ID_RE.test(select.value)) fail('Choose a passport you belong to');
+  await api('PATCH', '/api/account', { default_passport_id: Number(select.value) });
+  toast('Default passport saved');
+});
+
+function defaultOptionText(p) {
+  if (p.role !== 'owner') return `${p.name} (${personLabel(p.owner)})`;
+  return p.is_personal ? `${p.name} (personal)` : p.name;
+}
+
+async function loadDefaultSelect(token) {
+  const select = $('default-passport');
+  select.disabled = true;
+  select.replaceChildren(new Option('Loading…', ''));
+  let list;
+  try {
+    list = await api('GET', '/api/passports');
+  } catch (err) {
+    if (token === routeToken) setError($('default-form'), err.message);
+    return;
+  }
+  if (token !== routeToken) return;
+  const options = list.passports
+    .filter((p) => ID_RE.test(String(p.id)))
+    .map((p) => new Option(defaultOptionText(p), String(p.id)));
+  select.replaceChildren(...options);
+  select.value = String(list.default_passport_id);
+  select.disabled = false;
+}
+
+function previewLines(preview) {
+  const lines = ['Your personal passport will be deleted.'];
+  for (const h of preview.handed_over) lines.push(`Handed over: ${h.name} → ${personLabel(h.new_owner)}`);
+  for (const d of preview.deleted) lines.push(`Deleted: ${d.name}`);
+  const left = Number(preview.left);
+  if (left > 0) lines.push(`You'll be removed from ${left} other ${left === 1 ? 'passport' : 'passports'}.`);
+  return lines;
+}
+
+// The delete button stays disabled until the preview has loaded, so the
+// consequences are always on screen before the account can be deleted.
+async function loadDeletePreview() {
+  const t = ++dialogToken;
+  const box = $('delete-preview');
+  box.replaceChildren(textEl('p', 'Checking what happens to your passports…', 'muted'));
+  $('delete-submit').disabled = true;
+  let preview;
+  try {
+    preview = await api('GET', '/api/account/delete-preview');
+  } catch (err) {
+    if (t === dialogToken) {
+      box.replaceChildren();
+      setError($('delete-form'), err.message);
+    }
+    return;
+  }
+  if (t !== dialogToken) return;
+  box.replaceChildren(...previewLines(preview).map((line) => textEl('p', line)));
+  $('delete-submit').disabled = false;
+}
 
 bindForm($('logout-all-form'), async () => {
   await api('POST', '/api/account/logout-everywhere');
@@ -444,6 +566,394 @@ bindForm($('delete-form'), async (form) => {
   await api('POST', '/api/account/delete', { password });
   clearSessionUi();
   await loadSession();
+});
+
+// ---- Passports ----
+
+// The open passport's detail and the user list for the open picker dialog.
+// Both are dropped on logout (clearPassportUi).
+let passport = null;
+let pickUsers = [];
+
+const ROLE_LABELS = { owner: 'Owner', participant: 'Participant', viewer: 'Viewer' };
+// Display names aren't unique, so a person is always named with @username too.
+const personLabel = (p) => `${p.display_name}${p.inactive ? ' (inactive)' : ''} @${p.username}`;
+const personRef = (u) => ({ user_id: u.id, username: u.username });
+
+// API paths are built only from an id that matches the id pattern.
+function passportPath(id, suffix = '') {
+  const s = String(id);
+  if (!ID_RE.test(s)) fail('Passport not found');
+  return `/api/passports/${s}${suffix}`;
+}
+
+function clearPassportUi() {
+  passport = null;
+  pickUsers = [];
+  dialogToken += 1;
+  for (const id of ['passport-list', 'participants-list', 'viewers-list', 'new-passport-people',
+    'add-person-user', 'default-passport', 'delete-preview']) {
+    $(id).replaceChildren();
+  }
+  for (const id of ['passport-name', 'passport-owner', 'delete-passport-text', 'passport-confirm-text']) {
+    $(id).textContent = '';
+  }
+}
+
+// ---- Passports: list ----
+
+// inList: the list card's shorter wording for your own passports.
+function ownerLine(p, inList) {
+  const own = p.role === 'owner';
+  if (p.is_personal && own) return inList ? 'Personal' : 'Personal passport';
+  if (p.is_personal) return `Personal passport of ${personLabel(p.owner)}`;
+  return own && inList ? 'Owned by you' : `Owned by ${personLabel(p.owner)}`;
+}
+
+function passportCardHtml(p) {
+  const badges = [];
+  if (p.is_default) badges.push(['Default', 'badge-accent']);
+  if (ROLE_LABELS[p.role]) badges.push([ROLE_LABELS[p.role], '']);
+  return `<li><button type="button" class="list-card" data-passport-id="${esc(String(p.id))}">`
+    + `<span class="list-card-title">${esc(p.name)}</span>`
+    + `<span class="list-card-sub">${esc(ownerLine(p, true))}</span>`
+    + `<span class="badges">${badgesHtml(badges)}</span>`
+    + '</button></li>';
+}
+
+async function enterPassports(_param, token) {
+  showLoading();
+  let list;
+  try {
+    list = await api('GET', '/api/passports');
+  } catch (err) {
+    if (token === routeToken) showLoadError(err.message);
+    return;
+  }
+  if (token !== routeToken) return;
+  $('passport-list').innerHTML = list.passports.map(passportCardHtml).join('');
+  showView('passports');
+}
+
+$('passport-list').addEventListener('click', (event) => {
+  const card = event.target.closest('[data-passport-id]');
+  if (!card) return;
+  const id = card.dataset.passportId;
+  if (ID_RE.test(id)) location.hash = `#/passports/${id}`;
+});
+
+// ---- Passports: new passport dialog ----
+
+// Loads GET /api/users for a picker dialog; ignored if the dialog closed meanwhile.
+async function loadPickUsers(form, status, onLoaded) {
+  const t = ++dialogToken;
+  status.textContent = 'Loading people…';
+  status.hidden = false;
+  let users;
+  try {
+    ({ users } = await api('GET', '/api/users'));
+  } catch (err) {
+    if (t === dialogToken) {
+      status.hidden = true;
+      setError(form, err.message);
+    }
+    return;
+  }
+  if (t !== dialogToken) return;
+  pickUsers = users.filter((u) => ID_RE.test(String(u.id)));
+  status.hidden = true;
+  onLoaded(pickUsers);
+}
+
+function pickRowHtml(u) {
+  const id = esc(String(u.id));
+  return `<li class="pick-row"><label for="new-passport-person-${id}">`
+    + `<span class="person-name">${esc(u.display_name)}</span>`
+    + `<span class="person-username">@${esc(u.username)}</span></label>`
+    + `<select id="new-passport-person-${id}" data-user-id="${id}">`
+    + '<option value="">Not added</option>'
+    + '<option value="participant">Participant</option>'
+    + '<option value="viewer">Viewer</option>'
+    + '</select></li>';
+}
+
+bindDialog('new-passport-open', 'new-passport-dialog', () => {
+  const form = $('new-passport-form');
+  const status = $('new-passport-status');
+  $('new-passport-people').replaceChildren();
+  loadPickUsers(form, status, (users) => {
+    $('new-passport-people').innerHTML = users.map(pickRowHtml).join('');
+    status.textContent = "There's nobody else to add yet.";
+    status.hidden = users.length > 0;
+  });
+});
+
+bindForm($('new-passport-form'), async () => {
+  const name = $('new-passport-name').value;
+  checkPassportName(name);
+  const participants = [];
+  const viewers = [];
+  for (const select of $('new-passport-people').querySelectorAll('select')) {
+    const user = pickUsers.find((u) => String(u.id) === select.dataset.userId);
+    if (!user) continue;
+    if (select.value === 'participant') participants.push(personRef(user));
+    else if (select.value === 'viewer') viewers.push(personRef(user));
+  }
+  if (participants.length + viewers.length > 19) fail('A passport can have at most 20 people');
+  const token = routeToken;
+  const detail = await api('POST', '/api/passports', { name, participants, viewers });
+  $('new-passport-dialog').close();
+  toast('Passport created');
+  const id = String(detail.passport.id);
+  if (token === routeToken && ID_RE.test(id)) location.hash = `#/passports/${id}`;
+});
+
+// ---- Passports: one passport ----
+
+async function enterPassport(id, token) {
+  // The route regex already enforces this; re-checked because the id ends up in API paths.
+  if (!ID_RE.test(id)) {
+    replaceRoute('#/passports');
+    return;
+  }
+  passport = null;
+  showLoading();
+  let detail;
+  try {
+    detail = await api('GET', passportPath(id));
+  } catch (err) {
+    if (token !== routeToken) return;
+    if (err.status === 404) {
+      toast('Passport not found', 'error');
+      replaceRoute('#/passports');
+    } else {
+      showLoadError(err.message);
+    }
+    return;
+  }
+  if (token !== routeToken) return;
+  showPassport(detail);
+  showView('passport');
+}
+
+function personRowHtml(m, removable) {
+  const badges = [];
+  if (m.is_owner) badges.push(['Owner', 'badge-accent']);
+  if (m.id === state.user.id) badges.push(['You', '']);
+  const remove = `Remove ${m.display_name} @${m.username}`;
+  return '<li class="person-row"><div class="person-text">'
+    + `<span class="person-name">${esc(m.display_name)}${m.inactive ? ' (inactive)' : ''}</span>`
+    + `<span class="person-username">@${esc(m.username)}</span>`
+    + (badges.length ? `<span class="badges">${badgesHtml(badges)}</span>` : '')
+    + '</div>'
+    + (removable
+      ? `<button type="button" class="btn" data-remove-user-id="${esc(String(m.id))}" aria-label="${esc(remove)}">Remove</button>`
+      : '')
+    + '</li>';
+}
+
+function showPassport(detail) {
+  passport = detail;
+  const p = detail.passport;
+  const owner = p.role === 'owner';
+  $('passport-name').textContent = p.name;
+  $('passport-owner').textContent = ownerLine(p, false);
+  $('passport-default').hidden = !p.is_default;
+  $('make-default').hidden = p.is_default;
+  $('participants-list').innerHTML = detail.participants.map((m) => personRowHtml(m, owner && !m.is_owner)).join('');
+  $('viewers-list').innerHTML = detail.viewers.map((m) => personRowHtml(m, owner)).join('');
+  $('viewers-list').hidden = detail.viewers.length === 0;
+  $('viewers-empty').hidden = detail.viewers.length > 0;
+  $('personal-note').hidden = !p.is_personal;
+  $('add-person-open').hidden = !owner;
+  $('passport-manage').hidden = !owner;
+  $('passport-danger').hidden = owner && p.is_personal;
+  $('delete-passport-open').hidden = !owner;
+  $('leave-open').hidden = owner;
+}
+
+// After an awaited action, redraw only if no render happened meanwhile.
+function showPassportIfCurrent(token, detail) {
+  if (token === routeToken) showPassport(detail);
+}
+
+// These errors mean the page is out of date (ownership or membership changed).
+const STALE_ERRORS = [
+  [403, 'Only the owner can do that'],
+  [404, 'Not in this passport'],
+  [409, "The owner can't leave. Delete the passport instead."],
+];
+
+// A request on the open passport. A stale page is re-fetched; a passport that
+// has gone sends the user to the list. The error is rethrown, and bindForm
+// toasts it because the dialog is closed by then.
+async function passportRequest(method, suffix, body) {
+  const token = routeToken;
+  try {
+    return await api(method, passportPath(passport.passport.id, suffix), body);
+  } catch (err) {
+    if (token === routeToken) {
+      if (err.status === 404 && err.message === 'Passport not found') {
+        closeDialogs();
+        replaceRoute('#/passports');
+      } else if (STALE_ERRORS.some(([status, message]) => err.status === status && err.message === message)) {
+        closeDialogs();
+        render();
+      }
+    }
+    throw err;
+  }
+}
+
+$('make-default').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  if (button.disabled || !passport) return;
+  button.disabled = true;
+  const token = routeToken;
+  const id = passport.passport.id;
+  try {
+    if (!ID_RE.test(String(id))) fail('Passport not found');
+    await api('PATCH', '/api/account', { default_passport_id: id });
+    if (token === routeToken) {
+      passport.passport.is_default = true;
+      showPassport(passport);
+    }
+    toast('Default passport set');
+  } catch (err) {
+    toast(err.message, 'error');
+  } finally {
+    button.disabled = false;
+  }
+});
+
+// ---- Passports: add person ----
+
+bindDialog('add-person-open', 'add-person-dialog', () => {
+  const personal = passport.passport.is_personal;
+  const status = $('add-person-status');
+  $('add-person-participant').disabled = personal;
+  $('add-person-participant').checked = !personal;
+  $('add-person-viewer').checked = personal;
+  $('add-person-user').replaceChildren();
+  $('add-person-fields').hidden = true;
+  $('add-person-roles').hidden = true;
+  $('add-person-submit').disabled = true;
+  loadPickUsers($('add-person-form'), status, (users) => {
+    const members = new Set([...passport.participants, ...passport.viewers].map((m) => m.id));
+    const candidates = users.filter((u) => !members.has(u.id));
+    if (!candidates.length) {
+      status.textContent = 'Everyone is already in this passport.';
+      status.hidden = false;
+      return;
+    }
+    $('add-person-user').replaceChildren(...candidates.map((u) => new Option(personLabel(u), String(u.id))));
+    $('add-person-fields').hidden = false;
+    $('add-person-roles').hidden = false;
+    $('add-person-submit').disabled = false;
+  });
+});
+
+bindForm($('add-person-form'), async (form) => {
+  const user = pickUsers.find((u) => String(u.id) === $('add-person-user').value);
+  if (!user) fail('Choose people from the list');
+  const role = form.querySelector('input[name="role"]:checked')?.value;
+  if (role !== 'participant' && role !== 'viewer') fail('Role must be participant or viewer');
+  const token = routeToken;
+  const detail = await passportRequest('POST', '/members', { ...personRef(user), role });
+  $('add-person-dialog').close();
+  showPassportIfCurrent(token, detail);
+  toast(`${user.display_name} added`);
+});
+
+// ---- Passports: remove person and leave (one shared confirmation dialog) ----
+
+let passportConfirm = null;
+const passportConfirmDialog = setupDialog('passport-confirm-dialog');
+passportConfirmDialog.addEventListener('close', () => { passportConfirm = null; });
+
+function openPassportConfirm(title, text, button, run) {
+  passportConfirm = run;
+  $('passport-confirm-title').textContent = title;
+  $('passport-confirm-text').textContent = text;
+  $('passport-confirm-submit').textContent = button;
+  passportConfirmDialog.showModal();
+}
+
+bindForm($('passport-confirm-form'), async () => {
+  if (passportConfirm) await passportConfirm();
+});
+
+$('people-card').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-remove-user-id]');
+  if (!button || !passport) return;
+  const uid = button.dataset.removeUserId;
+  if (!ID_RE.test(uid)) return;
+  const participant = passport.participants.find((m) => String(m.id) === uid);
+  const member = participant || passport.viewers.find((m) => String(m.id) === uid);
+  if (!member) return;
+  const text = participant
+    ? `Remove ${personLabel(member)}? Their meals in this passport will be deleted.`
+    : `Remove ${personLabel(member)}? They'll no longer see this passport.`;
+  openPassportConfirm('Remove person', text, 'Remove', async () => {
+    const token = routeToken;
+    const detail = await passportRequest('POST', `/members/${uid}/remove`);
+    passportConfirmDialog.close();
+    showPassportIfCurrent(token, detail);
+    toast('Removed');
+  });
+});
+
+$('leave-open').addEventListener('click', () => {
+  if (!passport) return;
+  const { name, role } = passport.passport;
+  const text = role === 'viewer'
+    ? `Leave ${name}? You'll no longer see it.`
+    : `Leave ${name}? Your meals in it will be deleted.`;
+  openPassportConfirm('Leave passport', text, 'Leave', async () => {
+    const token = routeToken;
+    await passportRequest('POST', '/leave');
+    passportConfirmDialog.close();
+    if (token === routeToken) replaceRoute('#/');
+    toast(`You left ${name}`);
+  });
+});
+
+// ---- Passports: rename and delete ----
+
+bindDialog('rename-open', 'rename-dialog', () => {
+  $('rename-name').value = passport.passport.name;
+});
+
+bindForm($('rename-form'), async () => {
+  const name = $('rename-name').value;
+  checkPassportName(name);
+  const token = routeToken;
+  const detail = await passportRequest('PATCH', '', { name });
+  $('rename-dialog').close();
+  showPassportIfCurrent(token, detail);
+  toast('Passport renamed');
+});
+
+const typedNameMatches = () => passport !== null
+  && $('delete-passport-confirm').value.normalize('NFC').trim() === passport.passport.name;
+
+bindDialog('delete-passport-open', 'delete-passport-dialog', () => {
+  $('delete-passport-text').textContent = `Permanently delete ${passport.passport.name}? `
+    + "Everyone's meals in it will be deleted. This can't be undone.";
+  $('delete-passport-submit').disabled = true;
+});
+
+$('delete-passport-confirm').addEventListener('input', () => {
+  $('delete-passport-submit').disabled = !typedNameMatches();
+});
+
+bindForm($('delete-passport-form'), async () => {
+  if (!typedNameMatches()) fail('Type the passport name to confirm');
+  const token = routeToken;
+  await passportRequest('POST', '/delete', { confirm_name: $('delete-passport-confirm').value });
+  $('delete-passport-dialog').close();
+  if (token === routeToken) replaceRoute('#/');
+  toast('Passport deleted');
 });
 
 // ---- Forced password change (temporary password set by an admin) ----
@@ -478,12 +988,10 @@ function userBadges(u) {
 }
 
 function userCardHtml(u) {
-  const badges = userBadges(u)
-    .map(([text, cls]) => `<span class="badge ${cls}">${esc(text)}</span>`)
-    .join('');
-  return `<li><button type="button" class="user-card" data-user-id="${esc(String(u.id))}">`
-    + `<span class="user-card-name">${esc(u.display_name)}</span>`
-    + `<span class="user-card-username">@${esc(u.username)}</span>`
+  const badges = badgesHtml(userBadges(u));
+  return `<li><button type="button" class="list-card" data-user-id="${esc(String(u.id))}">`
+    + `<span class="list-card-title">${esc(u.display_name)}</span>`
+    + `<span class="list-card-sub">@${esc(u.username)}</span>`
     + (badges ? `<span class="badges">${badges}</span>` : '')
     + '</button></li>';
 }
@@ -572,7 +1080,8 @@ async function enterAdminUser(id, token) {
   // The route regex already enforces this; re-checked because the id ends up
   // in API paths (defence in depth at a security boundary).
   if (!ID_RE.test(id)) {
-    enterHome();
+    history.replaceState(null, '', '#/');
+    enterHome(null, token);
     return;
   }
   let users;
@@ -677,7 +1186,8 @@ $('au-unlock').addEventListener('click', async (event) => {
 const CONFIRM_ACTIONS = {
   'au-disable': {
     title: 'Disable account', button: 'Disable', path: '/disable', done: 'Disabled',
-    text: (n) => `Disable ${n}? They'll be logged out everywhere and won't be able to log in. Nothing is deleted.`,
+    text: (n) => `Disable ${n}? They'll be logged out everywhere and won't be able to log in. Nothing is deleted. `
+      + 'Passports they own will be handed over to another active participant, if there is one.',
   },
   'au-enable': {
     title: 'Re-enable account', button: 'Enable', path: '/enable', done: 'Enabled',
@@ -732,7 +1242,9 @@ bindForm($('confirm-form'), async () => {
 const deleteMatches = () => $('admin-delete-confirm').value.toLowerCase() === adminUser.username.toLowerCase();
 
 bindDialog('au-delete', 'admin-delete-dialog', () => {
-  $('admin-delete-text').textContent = `Permanently delete ${adminUser.display_name}'s account? This can't be undone.`;
+  $('admin-delete-text').textContent = `Permanently delete ${adminUser.display_name}'s account? `
+    + "Their passports will be handed over to another participant or deleted, and they'll be removed "
+    + "from passports shared with them. This can't be undone.";
   $('admin-delete-label').textContent = `Type ${adminUser.username} to confirm`;
   $('admin-delete-submit').disabled = true;
 });

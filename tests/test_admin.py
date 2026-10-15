@@ -111,7 +111,7 @@ class MigrationServerTests(ServerTestCase):
 
     def test_upgraded_database_works(self):
         with self.db() as conn:
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], db.MIGRATIONS[-1][0])
             row = conn.execute("SELECT disabled, must_change_password, last_active_at, temp_password_set_at "
                                "FROM users WHERE id = 1").fetchone()
         self.assertEqual(tuple(row), (0, 0, self.base_time - 500, None))
@@ -786,7 +786,9 @@ class LastAdminRaceTests(AdminTestCase):
     def test_demote_each_other(self):
         for _ in range(3):
             with self.db() as conn:
-                conn.execute("DELETE FROM users WHERE id != 1")
+                others = [r[0] for r in conn.execute("SELECT id FROM users WHERE id != 1")]
+            self.delete_user_rows(*others)
+            with self.db() as conn:
                 conn.execute("UPDATE users SET is_admin = 1")
             carol_id, carol = self.user_with_own_password("carol", is_admin=True)
             results = self.race([lambda: self.action(carol_id, "demote"),
@@ -1155,8 +1157,7 @@ class LoginRaceTests(AdminTestCase):
 
     def test_delete_during_login(self):
         def delete():
-            with self.db() as conn:
-                conn.execute("DELETE FROM users WHERE id = ?", (self.bob,))
+            self.delete_user_rows(self.bob)
 
         self.after_verify = delete
         resp = self.login("bob", PASSWORD)

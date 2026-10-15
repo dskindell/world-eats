@@ -19,6 +19,7 @@
         <span class="caret" aria-hidden="true">&#9662;</span>
       </button>
       <div class="menu" id="user-menu" role="menu" aria-labelledby="menu-button" hidden>
+        <a class="menu-item" role="menuitem" href="#/passports">Passports</a>
         <a class="menu-item" role="menuitem" href="#/account">Account settings</a>
         <a class="menu-item" role="menuitem" href="#/admin" id="menu-admin" hidden>Admin</a>
         <button type="button" class="menu-item" role="menuitem" id="menu-logout">Log out</button>
@@ -72,9 +73,50 @@
       </form>
     </section>
 
-    <section class="view" id="view-home" aria-labelledby="home-title" hidden>
-      <h1 id="home-title" tabindex="-1">Welcome, <span id="home-name"></span>.</h1>
-      <p class="muted">Passports are coming soon.</p>
+    <section class="view" id="view-passports" aria-labelledby="passports-title" hidden>
+      <div class="view-head">
+        <h1 id="passports-title" tabindex="-1">Passports</h1>
+        <button type="button" class="btn btn-primary" id="new-passport-open">New passport</button>
+      </div>
+      <ul class="card-list" id="passport-list" aria-labelledby="passports-title"></ul>
+    </section>
+
+    <section class="view" id="view-passport" aria-labelledby="passport-title" hidden>
+      <a class="back-link" href="#/passports">All passports</a>
+      <h1 id="passport-title" tabindex="-1"><a class="heading-link" href="#/passports" id="passport-name"></a></h1>
+      <p class="muted" id="passport-owner"></p>
+      <div class="default-row">
+        <span class="badge badge-accent" id="passport-default">Default</span>
+        <button type="button" class="btn" id="make-default">Make default</button>
+      </div>
+
+      <div class="card">
+        <p class="muted info">Countries are coming soon.</p>
+      </div>
+
+      <section class="card stack" id="people-card" aria-labelledby="people-title">
+        <div class="view-head">
+          <h2 id="people-title">People</h2>
+          <button type="button" class="btn" id="add-person-open">Add person</button>
+        </div>
+        <h3 id="participants-title">Participants</h3>
+        <ul class="people-list" id="participants-list" aria-labelledby="participants-title"></ul>
+        <h3 id="viewers-title">Viewers</h3>
+        <ul class="people-list" id="viewers-list" aria-labelledby="viewers-title"></ul>
+        <p class="muted" id="viewers-empty">No viewers</p>
+        <p class="hint" id="personal-note">Personal passports can have viewers but not participants.</p>
+      </section>
+
+      <section class="card" id="passport-manage" aria-labelledby="manage-title">
+        <h2 id="manage-title">Manage</h2>
+        <button type="button" class="btn" id="rename-open">Rename</button>
+      </section>
+
+      <section class="card card-danger" id="passport-danger" aria-labelledby="passport-danger-title">
+        <h2 id="passport-danger-title">Danger zone</h2>
+        <button type="button" class="btn btn-danger" id="delete-passport-open">Delete passport</button>
+        <button type="button" class="btn btn-danger" id="leave-open">Leave passport</button>
+      </section>
     </section>
 
     <section class="view" id="view-account" aria-labelledby="account-title" hidden>
@@ -91,6 +133,18 @@
           <div class="field">
             <label for="account-display-name">Display name</label>
             <input id="account-display-name" name="display_name" type="text" required>
+          </div>
+          <p class="form-error" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="default-title">
+        <h2 id="default-title">Default passport</h2>
+        <form class="stack" id="default-form" method="post" novalidate>
+          <div class="field">
+            <label for="default-passport">Opens when you start World Eats</label>
+            <select id="default-passport" name="default_passport_id" disabled></select>
           </div>
           <p class="form-error" role="alert" hidden></p>
           <button type="submit" class="btn btn-primary">Save</button>
@@ -157,7 +211,7 @@
         <h1 id="admin-title" tabindex="-1">Admin</h1>
         <button type="button" class="btn btn-primary" id="add-user-open">Add user</button>
       </div>
-      <ul class="user-list" id="admin-users" aria-labelledby="admin-title"></ul>
+      <ul class="card-list" id="admin-users" aria-labelledby="admin-title"></ul>
     </section>
 
     <section class="view" id="view-admin-user" aria-labelledby="admin-user-title" hidden>
@@ -211,6 +265,7 @@
     <form class="stack" id="delete-form" method="post" novalidate>
       <h2 id="delete-title">Delete account</h2>
       <p>This permanently deletes your account. This can't be undone.</p>
+      <div class="preview" id="delete-preview" aria-live="polite"></div>
       <div class="field">
         <label for="delete-password">Password</label>
         <input id="delete-password" name="password" type="password" autocomplete="current-password" required>
@@ -218,7 +273,7 @@
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
         <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-danger">Delete my account</button>
+        <button type="submit" class="btn btn-danger" id="delete-submit">Delete my account</button>
       </div>
     </form>
   </dialog>
@@ -312,6 +367,92 @@
       <div class="actions">
         <button type="button" class="btn" data-close>Cancel</button>
         <button type="submit" class="btn btn-danger" id="admin-delete-submit" disabled>Delete account</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="new-passport-dialog" aria-labelledby="new-passport-title">
+    <form class="stack" id="new-passport-form" method="post" novalidate>
+      <h2 id="new-passport-title">New passport</h2>
+      <div class="field">
+        <label for="new-passport-name">Name</label>
+        <input id="new-passport-name" name="name" type="text" autocomplete="off" required>
+      </div>
+      <fieldset class="group">
+        <legend>People</legend>
+        <p class="hint" id="new-passport-hint">Up to 19 people. You're the owner and always a participant.</p>
+        <p class="muted" id="new-passport-status"></p>
+        <ul class="pick-list" id="new-passport-people"></ul>
+      </fieldset>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Create</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="add-person-dialog" aria-labelledby="add-person-title">
+    <form class="stack" id="add-person-form" method="post" novalidate>
+      <h2 id="add-person-title">Add person</h2>
+      <p class="muted" id="add-person-status"></p>
+      <div class="field" id="add-person-fields">
+        <label for="add-person-user">Person</label>
+        <select id="add-person-user" name="user_id"></select>
+      </div>
+      <fieldset class="group" id="add-person-roles">
+        <legend>Role</legend>
+        <label class="check"><input type="radio" name="role" value="participant" id="add-person-participant"> Participant</label>
+        <label class="check"><input type="radio" name="role" value="viewer" id="add-person-viewer"> Viewer</label>
+      </fieldset>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary" id="add-person-submit">Add</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="rename-dialog" aria-labelledby="rename-title">
+    <form class="stack" id="rename-form" method="post" novalidate>
+      <h2 id="rename-title">Rename passport</h2>
+      <div class="field">
+        <label for="rename-name">Name</label>
+        <input id="rename-name" name="name" type="text" autocomplete="off" required>
+      </div>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="delete-passport-dialog" aria-labelledby="delete-passport-title">
+    <form class="stack" id="delete-passport-form" method="post" novalidate>
+      <h2 id="delete-passport-title">Delete passport</h2>
+      <p id="delete-passport-text"></p>
+      <div class="field">
+        <label for="delete-passport-confirm">Type the passport name to confirm</label>
+        <input id="delete-passport-confirm" name="confirm_name" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+      </div>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-danger" id="delete-passport-submit" disabled>Delete</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Shared by Remove person and Leave passport; app.js fills the text. -->
+  <dialog class="dialog" id="passport-confirm-dialog" aria-labelledby="passport-confirm-title">
+    <form class="stack" id="passport-confirm-form" method="post" novalidate>
+      <h2 id="passport-confirm-title"></h2>
+      <p id="passport-confirm-text"></p>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-danger" id="passport-confirm-submit"></button>
       </div>
     </form>
   </dialog>

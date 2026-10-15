@@ -29,6 +29,7 @@ if str(APP_DIR) not in sys.path:
 import auth  # noqa: E402
 import config  # noqa: E402
 import db  # noqa: E402
+import passports  # noqa: E402
 import server  # noqa: E402
 
 PASSWORD = "correct horse battery"
@@ -202,13 +203,22 @@ class ServerTestCase(unittest.TestCase):
         return conn
 
     def insert_user(self, username, password=PASSWORD, is_admin=False, display_name=None):
+        """A user with their own password and, like every account, a personal passport."""
         password_hash = self.app.hasher.hash(password)
         with self.db() as conn:
             cur = conn.execute(
                 "INSERT INTO users (username, display_name, password_hash, is_admin, created_at) "
                 "VALUES (?, ?, ?, ?, ?)",
                 (username, display_name or username, password_hash, int(is_admin), self.base_time))
+            passports.create_personal(conn, cur.lastrowid, self.base_time)
         return cur.lastrowid
+
+    def delete_user_rows(self, *user_ids):
+        """Deletes users straight from the database, with the passports they own (test seam)."""
+        with self.db() as conn:
+            for user_id in user_ids:
+                conn.execute("DELETE FROM passports WHERE owner_id = ?", (user_id,))
+                conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
 
     def sessions_for(self, user_id):
         with self.db() as conn:

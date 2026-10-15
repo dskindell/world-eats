@@ -11,12 +11,15 @@ A statement is either an SQL string or a callable taking the connection.
 Write transactions: only top-level request handlers open one (`with
 req.write():`). Helpers that write take the connection and assume the caller
 already holds the transaction; they never call write() themselves. Nesting
-write() raises RuntimeError instead of deadlocking.
+write() raises RuntimeError instead of deadlocking. A GET that needs several
+SELECTs to agree (e.g. a membership check then the details) wraps them in
+`with req.read():`, a plain deferred transaction.
 """
 
 import re
 import sqlite3
 import threading
+import time
 from contextlib import contextmanager
 
 DB_NAME = "world-eats.db"
@@ -65,6 +68,36 @@ MIGRATIONS = [
         "UPDATE users SET last_active_at = "
         "(SELECT MAX(last_used_at) FROM sessions WHERE sessions.user_id = users.id)",
     ]),
+    # Feature 2: passports. AUTOINCREMENT so ids of deleted rows are never reused.
+    (3, [
+        """CREATE TABLE IF NOT EXISTS passports (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+            is_personal INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL
+        )""",
+        "CREATE UNIQUE INDEX IF NOT EXISTS passports_one_personal ON passports(owner_id) WHERE is_personal = 1",
+        "CREATE INDEX IF NOT EXISTS passports_owner ON passports(owner_id)",
+        """CREATE TABLE IF NOT EXISTS passport_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            passport_id INTEGER NOT NULL REFERENCES passports(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role TEXT NOT NULL CHECK (role IN ('participant', 'viewer')),
+            created_at INTEGER NOT NULL,
+            UNIQUE (passport_id, user_id)
+        )""",
+        "CREATE INDEX IF NOT EXISTS passport_members_user ON passport_members(user_id)",
+        add_column("users", "default_passport_id", "INTEGER REFERENCES passports(id) ON DELETE SET NULL"),
+        lambda conn: conn.execute(
+            "INSERT INTO passports (name, owner_id, is_personal, created_at) "
+            "SELECT 'My passport', id, 1, ? FROM users WHERE NOT EXISTS "
+            "(SELECT 1 FROM passports p WHERE p.owner_id = users.id AND p.is_personal = 1)",
+            (int(time.time()),)),
+        "INSERT INTO passport_members (passport_id, user_id, role, created_at) "
+        "SELECT id, owner_id, 'participant', created_at FROM passports WHERE is_personal = 1 AND NOT EXISTS "
+        "(SELECT 1 FROM passport_members m WHERE m.passport_id = passports.id AND m.user_id = passports.owner_id)",
+    ]),
 ]
 
 
@@ -94,6 +127,8 @@ def connect(path):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
+    # Deleted rows (names, later meal notes) are overwritten, not left in free pages.
+    conn.execute("PRAGMA secure_delete=ON")
     return conn
 
 
@@ -131,6 +166,16 @@ def write(conn, lock):
         except BaseException:
             conn.execute("ROLLBACK")
             raise
+        conn.execute("COMMIT")
+
+
+@contextmanager
+def read(conn):
+    """A read transaction: several SELECTs see one consistent snapshot. No lock, no writes."""
+    conn.execute("BEGIN")
+    try:
+        yield conn
+    finally:
         conn.execute("COMMIT")
 
 

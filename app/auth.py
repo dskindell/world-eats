@@ -45,15 +45,16 @@ def require_username(value):
     return value
 
 
-def clean_display_name(value):
+def clean_display_name(value, length_msg=DISPLAY_NAME_LENGTH_MSG, chars_msg=DISPLAY_NAME_CHARS_MSG):
+    """Display-name rules; passport names use the same rules with their own messages."""
     if not isinstance(value, str):
-        raise Invalid(DISPLAY_NAME_LENGTH_MSG)
+        raise Invalid(length_msg)
     name = unicodedata.normalize("NFC", value).strip()
     if not 1 <= len(name) <= 50:
-        raise Invalid(DISPLAY_NAME_LENGTH_MSG)
+        raise Invalid(length_msg)
     for ch in name:
         if ch != ZERO_WIDTH_JOINER and unicodedata.category(ch) in BLOCKED_CATEGORIES:
-            raise Invalid(DISPLAY_NAME_CHARS_MSG)
+            raise Invalid(chars_msg)
     return name
 
 

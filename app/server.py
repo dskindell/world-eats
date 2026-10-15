@@ -1,8 +1,8 @@
 """World Eats: pick a random country to eat from.
 
 Stdlib only (http.server + sqlite3). Feature 1a: first-visit setup, login,
-sessions and account settings; feature 1b: admin screen. See
-.claude/specs/1a-login-basics.md and 1b-admin-screen.md.
+sessions and account settings; feature 1b: admin screen; feature 2: passports.
+See .claude/specs/1a-login-basics.md, 1b-admin-screen.md and 2-passports.md.
 
 Patterns for later features:
 - ROUTES is an ordered list of (compiled regex, {method: Route(handler, ...options)}),
@@ -28,6 +28,13 @@ Patterns for later features:
   transaction, call require_live_session() so a session revoked meanwhile gets
   401, and make the write conditional on the state that was checked (e.g.
   UPDATE ... WHERE password_hash = <the verified hash>).
+- Passport routes (contract 2 §3): validate the body without the database first;
+  then, inside `with req.write():` (or `with req.read():` for a GET, which calls
+  member_passport() -> 404 only), owner-only writes call owner_passport()
+  (require_live_session -> 401, membership -> 404, ownership -> 403); other
+  writes call require_live_session() then member_passport(). Only then
+  anything that depends on the passport or the target. Storage
+  helpers live in passports.py and take `conn`.
 """
 
 import hashlib
@@ -44,12 +51,14 @@ import tempfile
 import threading
 import time
 import traceback
+import unicodedata
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable, NamedTuple
 
 import auth
 import db
+import passports
 from config import ConfigError, load_config, normalise_ip, split_host_port
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -193,6 +202,7 @@ def api_setup(req):
         if cur.rowcount != 1:
             raise ApiError(409, "Setup is already complete")
         user_id = cur.lastrowid
+        passports.create_personal(conn, user_id, now)
         token = create_session(conn, user_id, now)
     req.issue_session(token)
     req.app.log(f"Setup completed by {username}")
@@ -255,12 +265,25 @@ def api_logout(req):
 
 
 def api_update_account(req):
-    if "display_name" not in req.body:
+    has_name, has_default = "display_name" in req.body, "default_passport_id" in req.body
+    if not (has_name or has_default):
         raise ApiError(400, "Nothing to update")
-    display_name = auth.clean_display_name(req.body["display_name"])
+    display_name = auth.clean_display_name(req.body["display_name"]) if has_name else req.user["display_name"]
+    default_id = req.body.get("default_passport_id")
+    if has_default and default_id is not None and not valid_id(default_id):
+        raise ApiError(400, CHOOSE_PASSPORT_MSG)
+    user_id = req.user["id"]
     with req.write():
-        req.db().execute("UPDATE users SET display_name = ? WHERE id = ?", (display_name, req.user["id"]))
-    return 200, {"user": {**user_json(req.user), "display_name": display_name}}
+        conn = req.db()
+        require_live_session(req, conn)
+        if has_default:
+            if default_id is not None and not passports.is_member(conn, default_id, user_id):
+                raise ApiError(400, CHOOSE_PASSPORT_MSG)
+            conn.execute("UPDATE users SET default_passport_id = ? WHERE id = ?", (default_id, user_id))
+        if has_name:
+            conn.execute("UPDATE users SET display_name = ? WHERE id = ?", (display_name, user_id))
+        effective = passports.effective_default(conn, user_id)
+    return 200, {"user": {**user_json(req.user), "display_name": display_name}, "default_passport_id": effective}
 
 
 def check_own_password(req, password, wrong_message):
@@ -333,6 +356,7 @@ def api_delete_account(req):
                            (user_id,)).fetchone()
         if row is not None and is_last_usable_admin(conn, row):
             raise ApiError(409, "You're the only admin, so this account can't be deleted")
+        passports.remove_user_data(conn, user_id)
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     req.clear_session_cookie()
@@ -400,6 +424,7 @@ def api_admin_create_user(req):
                 (username, display_name, password_hash, int(is_admin), now, now))
         except sqlite3.IntegrityError:
             raise ApiError(409, "That username is taken") from None
+        passports.create_personal(conn, cur.lastrowid, now)
         row = find_user(conn, cur.lastrowid)
     log_admin_action(req, f"User {log_safe(username)} created")
     return 201, {"user": admin_user_json(req, row)}
@@ -454,6 +479,7 @@ def api_admin_disable(req, user_id):
         if is_last_usable_admin(conn, row):
             raise ApiError(409, "This is the last admin, so it can't be disabled")
         conn.execute("UPDATE users SET disabled = 1 WHERE id = ?", (user_id,))
+        passports.handover_on_disable(conn, user_id)
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         row = find_user(conn, user_id)
     log_admin_action(req, f"User {log_safe(row['username'])} disabled")
@@ -519,11 +545,220 @@ def api_admin_delete(req, user_id):
             raise ApiError(400, "Type the username to confirm")
         if is_last_usable_admin(conn, row):
             raise ApiError(409, "This is the last admin, so it can't be deleted")
+        passports.remove_user_data(conn, user_id)
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
     req.app.lockout.clear_user(row["username"].lower())
     log_admin_action(req, f"User {log_safe(row['username'])} deleted")
     return 200, {"ok": True}
+
+
+# --- Passports (contract 2, sections 3-5) ---
+
+MAX_ID = 9999999999
+PASSPORT_NAME_LENGTH_MSG = "Passport name must be 1-50 characters"
+PASSPORT_NAME_CHARS_MSG = "Passport name contains characters that aren't allowed"
+CHOOSE_PEOPLE_MSG = "Choose people from the list"
+CHOOSE_PASSPORT_MSG = "Choose a passport you belong to"
+NOT_FOUND_MSG = "Passport not found"
+ROLES = ("participant", "viewer")
+
+
+def valid_id(value):
+    return type(value) is int and 1 <= value <= MAX_ID
+
+
+def clean_passport_name(value):
+    return auth.clean_display_name(value, PASSPORT_NAME_LENGTH_MSG, PASSPORT_NAME_CHARS_MSG)
+
+
+def person_ref(value):
+    """A {user_id, username} object from the client: (id, username), or 400. Matched to a user later."""
+    if not isinstance(value, dict):
+        raise ApiError(400, CHOOSE_PEOPLE_MSG)
+    user_id, username = value.get("user_id"), value.get("username")
+    # Anything that isn't a valid username can't match a user (and can't reach SQLite as a bad string).
+    if not valid_id(user_id) or not auth.valid_username(username):
+        raise ApiError(400, CHOOSE_PEOPLE_MSG)
+    return user_id, username
+
+
+def person_list(body, key):
+    value = body.get(key, [])
+    if not isinstance(value, list) or len(value) > passports.MAX_PEOPLE - 1:
+        raise ApiError(400, CHOOSE_PEOPLE_MSG)
+    return [person_ref(item) for item in value]
+
+
+def require_person(conn, ref):
+    """Inside the transaction: the person must be one existing, enabled user (contract 2 §4)."""
+    user_id = passports.find_active_user(conn, *ref)
+    if user_id is None:
+        raise ApiError(400, CHOOSE_PEOPLE_MSG)
+    return user_id
+
+
+def member_passport(req, conn, passport_id):
+    """The passport and the caller's membership; 404 whether it's missing or they aren't in it."""
+    passport = passports.membership(conn, passport_id, req.user["id"])
+    if passport is None:
+        raise ApiError(404, NOT_FOUND_MSG)
+    return passport
+
+
+def owner_passport(req, conn, passport_id):
+    """Inside the write transaction: live session, membership (404), then ownership (403)."""
+    require_live_session(req, conn)
+    passport = member_passport(req, conn, passport_id)
+    if passport["owner_id"] != req.user["id"]:
+        raise ApiError(403, "Only the owner can do that")
+    return passport
+
+
+def reloaded_detail(req, conn, passport_id):
+    return passports.detail(conn, passports.membership(conn, passport_id, req.user["id"]), req.user["id"])
+
+
+def api_users(req):
+    rows = passports.active_users_except(req.db(), req.user["id"])
+    return 200, {"users": [passports.person_json(row) for row in rows]}
+
+
+def api_passports(req):
+    with req.read():
+        default_id, items = passports.summaries(req.db(), req.user["id"])
+    return 200, {"passports": items, "default_passport_id": default_id}
+
+
+def api_create_passport(req):
+    name = clean_passport_name(req.body.get("name"))
+    participants = person_list(req.body, "participants")
+    viewers = person_list(req.body, "viewers")
+    ids = [user_id for user_id, _ in participants + viewers]
+    if len(set(ids)) != len(ids) or req.user["id"] in ids:
+        raise ApiError(400, "Each person can only be added once")
+    user_id = req.user["id"]
+    now = req.app.now()
+    with req.write():
+        conn = req.db()
+        require_live_session(req, conn)
+        if passports.owned_count(conn, user_id) >= passports.MAX_OWNED:
+            raise ApiError(409, f"You can own at most {passports.MAX_OWNED} passports")
+        if 1 + len(ids) > passports.MAX_PEOPLE:
+            raise ApiError(409, f"A passport can have at most {passports.MAX_PEOPLE} people")
+        participant_ids = [require_person(conn, ref) for ref in participants]
+        viewer_ids = [require_person(conn, ref) for ref in viewers]
+        passport_id = passports.create(conn, name, user_id, participant_ids, viewer_ids, now)
+        detail = reloaded_detail(req, conn, passport_id)
+    return 201, detail
+
+
+def api_passport(req, passport_id):
+    with req.read():
+        conn = req.db()
+        passport = member_passport(req, conn, int(passport_id))
+        detail = passports.detail(conn, passport, req.user["id"])
+    return 200, detail
+
+
+def api_rename_passport(req, passport_id):
+    if "name" not in req.body:
+        raise ApiError(400, "Nothing to update")
+    name = clean_passport_name(req.body["name"])
+    passport_id = int(passport_id)
+    with req.write():
+        conn = req.db()
+        owner_passport(req, conn, passport_id)
+        conn.execute("UPDATE passports SET name = ? WHERE id = ?", (name, passport_id))
+        detail = reloaded_detail(req, conn, passport_id)
+    return 200, detail
+
+
+def api_delete_passport(req, passport_id):
+    passport_id = int(passport_id)
+    confirm = req.body.get("confirm_name")
+    with req.write():
+        conn = req.db()
+        passport = owner_passport(req, conn, passport_id)
+        if passport["is_personal"]:
+            raise ApiError(409, "Your personal passport can't be deleted")
+        if not isinstance(confirm, str) or unicodedata.normalize("NFC", confirm).strip() != passport["name"]:
+            raise ApiError(400, "Type the passport name to confirm")
+        # Memberships cascade; defaults pointing here become NULL (ON DELETE SET NULL).
+        conn.execute("DELETE FROM passports WHERE id = ? AND owner_id = ?", (passport_id, req.user["id"]))
+    return 200, {"ok": True}
+
+
+def api_add_member(req, passport_id):
+    ref = person_ref(req.body)
+    role = req.body.get("role")
+    if role not in ROLES:
+        raise ApiError(400, "Role must be participant or viewer")
+    passport_id = int(passport_id)
+    with req.write():
+        conn = req.db()
+        passport = owner_passport(req, conn, passport_id)
+        if passport["is_personal"] and role == "participant":
+            raise ApiError(409, "A personal passport can't have participants")
+        user_id = require_person(conn, ref)
+        if passports.is_member(conn, passport_id, user_id):
+            raise ApiError(409, "Already in this passport")
+        if passports.member_count(conn, passport_id) >= passports.MAX_PEOPLE:
+            raise ApiError(409, f"A passport can have at most {passports.MAX_PEOPLE} people")
+        passports.add_member(conn, passport_id, user_id, role, req.app.now())
+        detail = reloaded_detail(req, conn, passport_id)
+    return 200, detail
+
+
+def api_remove_member(req, passport_id, user_id):
+    passport_id, user_id = int(passport_id), int(user_id)
+    with req.write():
+        conn = req.db()
+        passport = owner_passport(req, conn, passport_id)
+        if user_id == passport["owner_id"]:
+            raise ApiError(409, "The owner can't be removed")
+        cur = conn.execute("DELETE FROM passport_members WHERE passport_id = ? AND user_id = ?",
+                           (passport_id, user_id))
+        if cur.rowcount != 1:
+            raise ApiError(404, "Not in this passport")
+        passports.clear_default(conn, user_id, passport_id)
+        detail = reloaded_detail(req, conn, passport_id)
+    return 200, detail
+
+
+def api_leave_passport(req, passport_id):
+    passport_id = int(passport_id)
+    user_id = req.user["id"]
+    with req.write():
+        conn = req.db()
+        require_live_session(req, conn)
+        # owner_id is read here, inside the transaction: a handover since the request
+        # began that made the caller owner is refused below.
+        passport = member_passport(req, conn, passport_id)
+        if passport["owner_id"] == user_id:
+            raise ApiError(409, "The owner can't leave. Delete the passport instead.")
+        cur = conn.execute(
+            "DELETE FROM passport_members WHERE passport_id = ? AND user_id = ? "
+            "AND user_id != (SELECT owner_id FROM passports WHERE id = ?)", (passport_id, user_id, passport_id))
+        if cur.rowcount != 1:
+            raise ApiError(404, NOT_FOUND_MSG)
+        passports.clear_default(conn, user_id, passport_id)
+    return 200, {"ok": True}
+
+
+def api_delete_preview(req):
+    user_id = req.user["id"]
+    with req.read():
+        conn = req.db()
+        handed_over, deleted = [], []
+        for passport, new_owner in passports.deletion_plan(conn, user_id):
+            if new_owner is None:
+                deleted.append({"id": passport["id"], "name": passport["name"]})
+            else:
+                handed_over.append({"id": passport["id"], "name": passport["name"],
+                                    "new_owner": passports.person_json(passports.find_person(conn, new_owner))})
+        left = passports.other_membership_count(conn, user_id)
+    return 200, {"handed_over": handed_over, "deleted": deleted, "left": left}
 
 
 def literal(path):
@@ -532,6 +767,7 @@ def literal(path):
 
 ID = "([1-9][0-9]{0,9})"  # ASCII digits only; int() is applied after the match
 ADMIN_USER = literal("/api/admin/users/") + ID
+PASSPORT = literal("/api/passports/") + ID
 
 
 def admin_route(handler):
@@ -548,6 +784,14 @@ ROUTES = [(re.compile(pattern), methods) for pattern, methods in [
     (literal("/api/account/password"), {"POST": Route(api_change_password, allow_pending=True)}),
     (literal("/api/account/logout-everywhere"), {"POST": Route(api_logout_everywhere, allow_pending=True)}),
     (literal("/api/account/delete"), {"POST": Route(api_delete_account)}),
+    (literal("/api/account/delete-preview"), {"GET": Route(api_delete_preview)}),
+    (literal("/api/users"), {"GET": Route(api_users)}),
+    (literal("/api/passports"), {"GET": Route(api_passports), "POST": Route(api_create_passport)}),
+    (PASSPORT, {"GET": Route(api_passport), "PATCH": Route(api_rename_passport)}),
+    (PASSPORT + literal("/delete"), {"POST": Route(api_delete_passport)}),
+    (PASSPORT + literal("/members"), {"POST": Route(api_add_member)}),
+    (PASSPORT + literal("/members/") + ID + literal("/remove"), {"POST": Route(api_remove_member)}),
+    (PASSPORT + literal("/leave"), {"POST": Route(api_leave_passport)}),
     (literal("/api/admin/users"), {"GET": admin_route(api_admin_users),
                                    "POST": admin_route(api_admin_create_user)}),
     (ADMIN_USER, {"PATCH": admin_route(api_admin_update_user)}),
@@ -899,6 +1143,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def write(self):
         return db.write(self.db(), self.app.write_lock)
+
+    def read(self):
+        return db.read(self.db())
 
     def client_ip(self):
         return auth.client_ip(self.client_address[0], self.headers.get_all("X-Forwarded-For") or [],

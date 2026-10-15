@@ -61,6 +61,12 @@ h2 {
   margin: 0 0 0.75rem;
 }
 
+h3 {
+  font-size: 1rem;
+  margin: 0;
+  color: var(--text-muted);
+}
+
 p {
   margin: 0 0 0.75rem;
 }
@@ -230,7 +236,9 @@ h1:focus {
   font-weight: 600;
 }
 
-.field input {
+.field input,
+.field select,
+.pick-row select {
   display: block;
   width: 100%;
   min-height: var(--tap);
@@ -244,7 +252,9 @@ h1:focus {
   font-size: 1rem;
 }
 
-.field input:focus-visible {
+.field input:focus-visible,
+.field select:focus-visible,
+.pick-row select:focus-visible {
   border-color: var(--focus);
 }
 
@@ -358,7 +368,7 @@ h1:focus {
   border-color: var(--danger-border);
 }
 
-/* ---- Admin ---- */
+/* ---- Lists and badges (admin users, passports) ---- */
 
 .view-head {
   display: flex;
@@ -372,17 +382,17 @@ h1:focus {
   margin: 0;
 }
 
-.user-list {
+.card-list {
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.user-list > li + li {
+.card-list > li + li {
   margin-top: 0.5rem;
 }
 
-.user-card {
+.list-card {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
@@ -398,17 +408,17 @@ h1:focus {
   cursor: pointer;
 }
 
-.user-card:hover {
+.list-card:hover {
   background: var(--surface-raised);
   border-color: var(--text-muted);
 }
 
-.user-card-name {
+.list-card-title {
   max-width: 100%;
   font-weight: 700;
 }
 
-.user-card-username {
+.list-card-sub {
   max-width: 100%;
   color: var(--text-muted);
 }
@@ -488,4 +498,97 @@ h1:focus {
   height: 1.25rem;
   margin: 0;
   accent-color: var(--accent);
+}
+
+/* ---- Passports ---- */
+
+.heading-link {
+  color: inherit;
+  text-decoration: none;
+}
+
+.heading-link:hover {
+  text-decoration: underline;
+}
+
+.default-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.people-list,
+.pick-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.person-row,
+.pick-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+}
+
+.person-row + .person-row,
+.pick-row + .pick-row {
+  border-top: 1px solid var(--border);
+}
+
+.person-text,
+.pick-row label {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.person-name {
+  font-weight: 600;
+}
+
+.person-username {
+  color: var(--text-muted);
+}
+
+.person-row .badges {
+  margin-top: 0.25rem;
+}
+
+.person-row .btn {
+  flex-shrink: 0;
+}
+
+.pick-row select {
+  flex: 0 0 8.5rem;
+  width: 8.5rem;
+}
+
+.group {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.stack > .group {
+  margin-top: 1.25rem;
+}
+
+.group legend {
+  padding: 0;
+  margin-bottom: 0.25rem;
+  font-weight: 600;
+}
+
+.check:has(input:disabled) {
+  color: var(--text-muted);
+  cursor: not-allowed;
+}
+
+.preview p {
+  margin: 0 0 0.25rem;
 }
