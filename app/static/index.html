@@ -89,10 +89,18 @@
         <span class="badge badge-accent" id="passport-default">Default</span>
         <button type="button" class="btn" id="make-default">Make default</button>
       </div>
+      <button type="button" class="btn" id="people-open">People and settings</button>
 
-      <div class="card">
-        <p class="muted info">Countries are coming soon.</p>
-      </div>
+      <section class="card" aria-labelledby="countries-title">
+        <h2 id="countries-title">Countries</h2>
+        <p class="muted" id="passport-progress"></p>
+        <ul class="country-list" id="country-list" aria-labelledby="countries-title"></ul>
+      </section>
+    </section>
+
+    <section class="view" id="view-people" aria-labelledby="people-page-title" hidden>
+      <a class="back-link" id="people-back" href="#/passports"></a>
+      <h1 id="people-page-title" tabindex="-1">People and settings</h1>
 
       <section class="card stack" id="people-card" aria-labelledby="people-title">
         <div class="view-head">
@@ -116,6 +124,29 @@
         <h2 id="passport-danger-title">Danger zone</h2>
         <button type="button" class="btn btn-danger" id="delete-passport-open">Delete passport</button>
         <button type="button" class="btn btn-danger" id="leave-open">Leave passport</button>
+      </section>
+    </section>
+
+    <section class="view" id="view-country" aria-labelledby="country-title" hidden>
+      <a class="back-link" id="country-back" href="#/passports"></a>
+      <h1 id="country-title" tabindex="-1"><span class="flag" id="country-flag" aria-hidden="true"></span> <span id="country-name"></span></h1>
+      <p class="muted" id="country-region"></p>
+      <div class="card country-summary">
+        <p class="country-status" id="country-status"></p>
+        <p class="muted" id="country-avg"></p>
+      </div>
+
+      <section class="card" id="country-people-card" aria-labelledby="country-people-title">
+        <h2 id="country-people-title">Participants</h2>
+        <ul class="people-list" id="country-participants" aria-labelledby="country-people-title"></ul>
+      </section>
+
+      <button type="button" class="btn btn-primary" id="log-meal-open">Log a meal</button>
+
+      <section aria-labelledby="meals-title">
+        <h2 id="meals-title" tabindex="-1">Meals</h2>
+        <ul class="card-list" id="meal-list" aria-labelledby="meals-title"></ul>
+        <p class="muted" id="meals-empty">No meals yet.</p>
       </section>
     </section>
 
@@ -453,6 +484,58 @@
       <div class="actions">
         <button type="button" class="btn" data-close>Cancel</button>
         <button type="submit" class="btn btn-danger" id="passport-confirm-submit"></button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Log a meal and Edit meal; app.js sets the title and fields. -->
+  <dialog class="dialog" id="meal-dialog" aria-labelledby="meal-title">
+    <form class="stack" id="meal-form" method="post" novalidate>
+      <h2 id="meal-title"></h2>
+      <div class="field">
+        <label for="meal-date">Date</label>
+        <input id="meal-date" name="eaten_on" type="date" min="1900-01-01" required>
+      </div>
+      <div class="field">
+        <label for="meal-dish">What you ate</label>
+        <input id="meal-dish" name="dish" type="text" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="meal-place">Where</label>
+        <input id="meal-place" name="place" type="text" autocomplete="off" placeholder="Restaurant name, or home">
+      </div>
+      <fieldset class="group">
+        <legend>Stars</legend>
+        <div class="star-choices">
+          <label class="check"><input type="radio" name="rating" value="none" checked> None</label>
+          <label class="check"><input type="radio" name="rating" value="1"> 1</label>
+          <label class="check"><input type="radio" name="rating" value="2"> 2</label>
+          <label class="check"><input type="radio" name="rating" value="3"> 3</label>
+          <label class="check"><input type="radio" name="rating" value="4"> 4</label>
+          <label class="check"><input type="radio" name="rating" value="5"> 5</label>
+        </div>
+      </fieldset>
+      <div class="field">
+        <label for="meal-notes">Notes</label>
+        <textarea id="meal-notes" name="notes" rows="4"></textarea>
+      </div>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="delete-meal-dialog" aria-labelledby="delete-meal-title">
+    <form class="stack" id="delete-meal-form" method="post" novalidate>
+      <h2 id="delete-meal-title">Delete meal</h2>
+      <p id="delete-meal-text"></p>
+      <p id="delete-meal-last"></p>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-danger">Delete meal</button>
       </div>
     </form>
   </dialog>

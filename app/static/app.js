@@ -101,6 +101,7 @@ function bindForm(form, handler) {
     try {
       await handler(form);
     } catch (err) {
+      if (err instanceof QuietError) return;
       // A dialog closed meanwhile (e.g. by navigation) would keep a stale
       // error for its next opening, so report it as a toast instead.
       const dialog = form.closest('dialog');
@@ -113,6 +114,10 @@ function bindForm(form, handler) {
 }
 
 const fail = (message) => { throw new Error(message); };
+
+// Abandons an action without telling the user, e.g. when the session ended
+// and the page has already been cleared and re-rendered.
+class QuietError extends Error {}
 
 // ---- Client-side checks mirroring contract §4 (the server is authoritative) ----
 
@@ -143,18 +148,24 @@ function checkNewPassword(value) {
 
 // ---- Views and routing ----
 
-const VIEWS = ['loading', 'setup', 'login', 'force-password', 'passports', 'passport', 'account', 'admin', 'admin-user'];
+const VIEWS = ['loading', 'setup', 'login', 'force-password', 'passports', 'passport', 'people', 'country',
+  'account', 'admin', 'admin-user'];
 // 'loading' keeps the top bar while a logged-in route loads (it's hidden with no user).
-const TOPBAR_VIEWS = ['loading', 'passports', 'passport', 'account', 'admin', 'admin-user'];
-// User and passport ids: one pattern for the route table and every id check.
+const TOPBAR_VIEWS = ['loading', 'passports', 'passport', 'people', 'country', 'account', 'admin', 'admin-user'];
+// User, passport and meal ids: one pattern for the route table and every id check.
 const ID_PATTERN = '[1-9][0-9]{0,9}';
 const ID_RE = new RegExp(`^${ID_PATTERN}$`);
+const CODE_RE = /^[A-Z]{2}$/;
 
 // Ordered hash routes; the first match wins. Anything unmatched goes to #/.
+// The country route takes any last segment so a bad code can be reported
+// (enterCountry checks it against CODE_RE and the country list).
 const ROUTES = [
   { re: /^#\/$/, enter: enterHome },
   { re: /^#\/passports$/, enter: enterPassports },
   { re: new RegExp(`^#/passports/(${ID_PATTERN})$`), enter: enterPassport },
+  { re: new RegExp(`^#/passports/(${ID_PATTERN})/people$`), enter: enterPeople },
+  { re: new RegExp(`^#/passports/(${ID_PATTERN})/countries/([^/]*)$`), enter: enterCountry },
   { re: /^#\/account$/, enter: enterAccount },
   { re: /^#\/admin$/, admin: true, enter: enterAdmin },
   { re: new RegExp(`^#/admin/users/(${ID_PATTERN})$`), admin: true, enter: enterAdminUser },
@@ -197,7 +208,8 @@ function render() {
     history.replaceState(null, '', '#/');
     return enterHome(null, routeToken);
   }
-  return route.enter(hash.match(route.re)[1], routeToken);
+  const [, param, param2] = hash.match(route.re);
+  return route.enter(param, routeToken, param2);
 }
 
 function showLoading() {
@@ -530,6 +542,7 @@ function previewLines(preview) {
   for (const d of preview.deleted) lines.push(`Deleted: ${d.name}`);
   const left = Number(preview.left);
   if (left > 0) lines.push(`You'll be removed from ${left} other ${left === 1 ? 'passport' : 'passports'}.`);
+  lines.push('All your meals will be deleted.');
   return lines;
 }
 
@@ -574,6 +587,10 @@ bindForm($('delete-form'), async (form) => {
 // Both are dropped on logout (clearPassportUi).
 let passport = null;
 let pickUsers = [];
+// The open country page's data, and the meal being edited or deleted.
+let countryDetail = null;
+let mealEdit = null;
+let mealDelete = null;
 
 const ROLE_LABELS = { owner: 'Owner', participant: 'Participant', viewer: 'Viewer' };
 // Display names aren't unique, so a person is always named with @username too.
@@ -590,14 +607,22 @@ function passportPath(id, suffix = '') {
 function clearPassportUi() {
   passport = null;
   pickUsers = [];
+  countryDetail = null;
+  mealEdit = null;
+  mealDelete = null;
+  dropCountries();
   dialogToken += 1;
   for (const id of ['passport-list', 'participants-list', 'viewers-list', 'new-passport-people',
-    'add-person-user', 'default-passport', 'delete-preview']) {
+    'add-person-user', 'default-passport', 'delete-preview', 'country-list', 'country-participants', 'meal-list']) {
     $(id).replaceChildren();
   }
-  for (const id of ['passport-name', 'passport-owner', 'delete-passport-text', 'passport-confirm-text']) {
+  for (const id of ['passport-name', 'passport-owner', 'delete-passport-text', 'passport-confirm-text',
+    'passport-progress', 'people-back', 'country-back', 'country-flag', 'country-name', 'country-region',
+    'country-status', 'country-avg', 'meal-title', 'delete-meal-text', 'delete-meal-last']) {
     $(id).textContent = '';
   }
+  $('meal-form').reset();
+  $('delete-meal-form').reset();
 }
 
 // ---- Passports: list ----
@@ -708,33 +733,429 @@ bindForm($('new-passport-form'), async () => {
   if (token === routeToken && ID_RE.test(id)) location.hash = `#/passports/${id}`;
 });
 
-// ---- Passports: one passport ----
+// ---- Countries: the fixed list, fetched once per session ----
+
+let countriesCache = null;
+// Bumped when the cache is dropped, so a load started before logout can't refill it.
+let countriesGen = 0;
+
+function dropCountries() {
+  countriesCache = null;
+  countriesGen += 1;
+}
+
+// Resolves to a Map of code -> {code, name, region}; only well-formed codes are kept.
+async function getCountries() {
+  if (countriesCache) return countriesCache;
+  const gen = countriesGen;
+  const data = await api('GET', '/api/countries');
+  const list = (Array.isArray(data.countries) ? data.countries : [])
+    .filter((c) => c && typeof c.code === 'string' && CODE_RE.test(c.code) && typeof c.name === 'string');
+  const byCode = new Map(list.map((c) => [c.code, c]));
+  if (gen === countriesGen) countriesCache = byCode;
+  return byCode;
+}
+
+// Two regional-indicator symbols; built only from a checked code, never server text.
+function flagFor(code) {
+  if (!CODE_RE.test(code)) return '';
+  return String.fromCodePoint(...[...code].map((ch) => 0x1F1E6 + ch.charCodeAt(0) - 65));
+}
+
+const DAY_RE = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+
+// Meal dates are calendar dates with no time zone. Formatting them in UTC
+// keeps them from shifting by a day in negative-offset time zones.
+function formatDay(iso) {
+  if (typeof iso !== 'string' || !DAY_RE.test(iso)) return '';
+  const d = new Date(`${iso}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return '';
+  return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric', timeZone: 'UTC' });
+}
+
+// From local date parts: toISOString() would give the UTC date.
+function localToday() {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
+const isStars = (r) => Number.isInteger(r) && r >= 1 && r <= 5;
+
+function starsEl(r) {
+  const el = textEl('span', '★'.repeat(r) + '☆'.repeat(5 - r), 'stars');
+  el.setAttribute('role', 'img');
+  el.setAttribute('aria-label', `${r} out of 5 stars`);
+  return el;
+}
+
+// ---- Passports: loading one passport (passport, people and country pages) ----
+
+// Loads the passport detail together with the page's other requests (thunks
+// in `more`). Returns their results, or null if the page was superseded or
+// the load failed (the error is already shown).
+async function loadPassport(id, token, more = []) {
+  // The route regex already enforces this; re-checked because the id ends up in API paths.
+  if (!ID_RE.test(id)) {
+    replaceRoute('#/passports');
+    return null;
+  }
+  passport = null;
+  countryDetail = null;
+  showLoading();
+  let results;
+  try {
+    results = await Promise.all([api('GET', passportPath(id)), ...more.map((load) => load())]);
+  } catch (err) {
+    if (token === routeToken) showPassportLoadError(err, id);
+    return null;
+  }
+  if (token !== routeToken) return null;
+  const [detail, ...rest] = results;
+  showPassport(detail);
+  return rest;
+}
+
+function showPassportLoadError(err, id) {
+  if (err.status === 404 && err.message === 'Country not found') {
+    toast('Country not found', 'error');
+    replaceRoute(`#/passports/${id}`);
+  } else if (err.status === 404) {
+    toast('Passport not found', 'error');
+    replaceRoute('#/passports');
+  } else {
+    showLoadError(err.message);
+  }
+}
 
 async function enterPassport(id, token) {
-  // The route regex already enforces this; re-checked because the id ends up in API paths.
+  const rest = await loadPassport(id, token, [() => api('GET', passportPath(id, '/countries')), getCountries]);
+  if (!rest) return;
+  const [summary, countries] = rest;
+  showCountryList(summary, countries);
+  showView('passport');
+}
+
+async function enterPeople(id, token) {
+  if (!(await loadPassport(id, token))) return;
+  showView('people');
+}
+
+// The code is checked against CODE_RE and the country list before it's used
+// in an API path; an unknown one goes back to the passport.
+async function enterCountry(id, token, code) {
   if (!ID_RE.test(id)) {
     replaceRoute('#/passports');
     return;
   }
-  passport = null;
   showLoading();
-  let detail;
+  let countries;
   try {
-    detail = await api('GET', passportPath(id));
+    countries = await getCountries();
   } catch (err) {
-    if (token !== routeToken) return;
-    if (err.status === 404) {
-      toast('Passport not found', 'error');
-      replaceRoute('#/passports');
-    } else {
-      showLoadError(err.message);
-    }
+    if (token === routeToken) showLoadError(err.message);
     return;
   }
   if (token !== routeToken) return;
-  showPassport(detail);
-  showView('passport');
+  if (!CODE_RE.test(code) || !countries.has(code)) {
+    toast('Country not found', 'error');
+    replaceRoute(`#/passports/${id}`);
+    return;
+  }
+  const rest = await loadPassport(id, token, [() => api('GET', passportPath(id, `/countries/${code}`))]);
+  if (!rest) return;
+  showCountry(code, rest[0], countries);
+  showView('country');
 }
+
+// ---- Passport page: progress and country list ----
+
+// Fixed labels and classes; `status` itself never reaches the HTML.
+const STATUS_BADGES = {
+  not_started: ['Not started', 'badge-status-none'],
+  some: ['Some', 'badge-status-some'],
+  complete: ['Fully complete', 'badge-status-complete'],
+};
+const statusBadge = (status) => (typeof status === 'string' && Object.hasOwn(STATUS_BADGES, status)
+  ? STATUS_BADGES[status] : null);
+const count = (n) => (Number.isInteger(n) && n >= 0 ? n : 0);
+// A personal passport has one participant, so any meal means it's done.
+const personalDone = (s) => s.status === 'some' || s.status === 'complete';
+
+function progressText(progress, rows, personal) {
+  const total = Number.isInteger(progress.total) ? progress.total : rows.length;
+  // Counted from the rows so a viewer (mine is null) sees it too.
+  if (personal) return `Done: ${rows.filter(personalDone).length} / ${total}`;
+  const mine = Number.isInteger(progress.mine) ? ` · You: ${count(progress.mine)} / ${total}` : '';
+  return `Fully complete: ${count(progress.complete)} / ${total}${mine}`;
+}
+
+function countryRowHtml(s, country, personal) {
+  const badges = [];
+  if (personal) {
+    if (personalDone(s)) badges.push(['✓ Done', 'badge-status-complete']);
+  } else {
+    const status = statusBadge(s.status);
+    if (status) badges.push(status);
+    if (s.done_by_me === true) badges.push(['✓ You', '']);
+  }
+  return `<li><button type="button" class="country-row" data-code="${esc(country.code)}">`
+    + `<span class="flag" aria-hidden="true">${esc(flagFor(country.code))}</span>`
+    + `<span class="country-row-name">${esc(country.name)}</span>`
+    + `<span class="badges">${badgesHtml(badges)}</span>`
+    + '</button></li>';
+}
+
+function showCountryList(data, countries) {
+  const personal = passport.passport.is_personal === true;
+  const rows = (Array.isArray(data.countries) ? data.countries : [])
+    .filter((s) => s && typeof s.code === 'string' && CODE_RE.test(s.code) && countries.has(s.code));
+  $('passport-progress').textContent = progressText(data.progress || {}, rows, personal);
+  $('country-list').innerHTML = rows.map((s) => countryRowHtml(s, countries.get(s.code), personal)).join('');
+}
+
+$('country-list').addEventListener('click', (event) => {
+  const row = event.target.closest('[data-code]');
+  if (!row || !passport || !countriesCache) return;
+  const code = row.dataset.code;
+  const id = String(passport.passport.id);
+  if (CODE_RE.test(code) && countriesCache.has(code) && ID_RE.test(id)) {
+    location.hash = `#/passports/${id}/countries/${code}`;
+  }
+});
+
+$('people-open').addEventListener('click', () => {
+  const id = passport ? String(passport.passport.id) : '';
+  if (ID_RE.test(id)) location.hash = `#/passports/${id}/people`;
+});
+
+// ---- Country page ----
+
+const canLogMeals = () => passport !== null
+  && (passport.passport.role === 'owner' || passport.passport.role === 'participant');
+
+function countryStatusText(data, participants, personal) {
+  if (personal) {
+    const owner = participants[0];
+    if (!owner || owner.done !== true) return 'Not done yet';
+    const date = formatDay(owner.completed_on);
+    return date ? `Done on ${date}` : 'Done';
+  }
+  if (data.status === 'complete') {
+    const date = formatDay(data.completed_on);
+    return date ? `Fully complete on ${date}` : 'Fully complete';
+  }
+  if (data.status === 'some') return 'Some participants have eaten here';
+  if (data.status === 'not_started') return 'Not started';
+  return '';
+}
+
+function countryPersonHtml(m) {
+  const done = m.done === true;
+  const doneText = done ? `Done ${formatDay(m.completed_on)}`.trim() : 'Not yet';
+  return '<li class="person-row"><div class="person-text">'
+    + `<span class="person-name">${esc(m.display_name)}${m.inactive ? ' (inactive)' : ''}</span>`
+    + `<span class="person-username">@${esc(m.username)}</span></div>`
+    + `<span class="done-state${done ? ' done-mark' : ' muted'}">${esc(doneText)}</span>`
+    + '</li>';
+}
+
+function mealButton(label, action, id, date) {
+  const button = textEl('button', label, 'btn');
+  button.type = 'button';
+  button.dataset.mealAction = action;
+  button.dataset.mealId = id;
+  button.setAttribute('aria-label', date ? `${label} meal from ${date}` : `${label} meal`);
+  return button;
+}
+
+// Built with textContent throughout; notes keep their line breaks via CSS.
+function mealCard(m) {
+  const li = document.createElement('li');
+  li.className = 'card meal-card';
+  const date = formatDay(m.eaten_on);
+  const head = document.createElement('div');
+  head.className = 'meal-head';
+  head.append(textEl('span', date, 'meal-date'));
+  if (isStars(m.rating)) head.append(starsEl(m.rating));
+  li.append(head);
+  if (m.user) li.append(textEl('p', personLabel(m.user), 'muted'));
+  if (typeof m.dish === 'string' && m.dish) li.append(textEl('p', m.dish, 'meal-dish'));
+  if (typeof m.place === 'string' && m.place) li.append(textEl('p', `at ${m.place}`, 'muted'));
+  if (typeof m.notes === 'string' && m.notes) li.append(textEl('p', m.notes, 'meal-notes'));
+  if (m.mine === true) {
+    const actions = document.createElement('div');
+    actions.className = 'actions';
+    const id = String(m.id);
+    actions.append(mealButton('Edit', 'edit', id, date), mealButton('Delete', 'delete', id, date));
+    li.append(actions);
+  }
+  return li;
+}
+
+function showCountry(code, data, countries) {
+  const country = countries.get(code);
+  const personal = passport.passport.is_personal === true;
+  const participants = Array.isArray(data.participants) ? data.participants : [];
+  const meals = (Array.isArray(data.meals) ? data.meals : []).filter((m) => m && ID_RE.test(String(m.id)));
+  countryDetail = { code, name: country.name, meals };
+  $('country-flag').textContent = flagFor(code);
+  $('country-name').textContent = country.name;
+  $('country-region').textContent = typeof country.region === 'string' ? country.region : '';
+  $('country-status').textContent = countryStatusText(data, participants, personal);
+  const avg = data.avg_rating;
+  const hasAvg = typeof avg === 'number' && Number.isFinite(avg);
+  $('country-avg').textContent = hasAvg ? `Average ★ ${avg.toFixed(1)}` : '';
+  $('country-avg').hidden = !hasAvg;
+  $('country-people-card').hidden = personal;
+  $('country-participants').innerHTML = personal ? '' : participants.map(countryPersonHtml).join('');
+  $('log-meal-open').hidden = !canLogMeals();
+  $('meal-list').replaceChildren(...meals.map(mealCard));
+  $('meals-empty').hidden = meals.length > 0;
+}
+
+// Re-reads the open country after a change without the loading view, so the
+// page keeps its scroll position.
+async function refreshCountry(token) {
+  const code = countryDetail ? countryDetail.code : '';
+  const countries = countriesCache;
+  if (!passport || !countries || !CODE_RE.test(code) || !countries.has(code)) {
+    render();
+    return;
+  }
+  let data;
+  try {
+    data = await passportRequest('GET', `/countries/${code}`);
+  } catch (err) {
+    if (err instanceof QuietError) return;
+    // A gone passport has already moved the page on (new routeToken); say why anyway.
+    const gone = err.status === 404 && err.message === 'Passport not found';
+    if (gone || token === routeToken) toast(err.message, 'error');
+    return;
+  }
+  if (token !== routeToken) return;
+  showCountry(code, data, countries);
+  // The Edit/Delete button that opened the dialog was replaced, so focus would
+  // fall back to <body>; put it on the meals heading instead.
+  if (!document.activeElement || document.activeElement === document.body) $('meals-title').focus();
+}
+
+$('meal-list').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-meal-id]');
+  if (!button || !countryDetail) return;
+  const id = button.dataset.mealId;
+  if (!ID_RE.test(id)) return;
+  const meal = countryDetail.meals.find((m) => String(m.id) === id && m.mine === true);
+  if (!meal) return;
+  if (button.dataset.mealAction === 'edit') openMealDialog(meal);
+  else if (button.dataset.mealAction === 'delete') openDeleteMeal(meal);
+});
+
+// ---- Meal dialogs ----
+
+const mealDialog = setupDialog('meal-dialog');
+mealDialog.addEventListener('close', () => { mealEdit = null; });
+
+// meal: the meal to edit, or null to log a new one.
+function openMealDialog(meal) {
+  if (!countryDetail) return;
+  mealEdit = meal;
+  const el = $('meal-form').elements;
+  const today = localToday();
+  const date = meal && typeof meal.eaten_on === 'string' && DAY_RE.test(meal.eaten_on) ? meal.eaten_on : today;
+  $('meal-title').textContent = meal ? 'Edit meal' : `Log a meal — ${countryDetail.name}`;
+  // The server allows up to a day ahead (time zones), so keep a stored later date editable.
+  el.eaten_on.max = date > today ? date : today;
+  el.eaten_on.value = date;
+  el.dish.value = meal && typeof meal.dish === 'string' ? meal.dish : '';
+  el.place.value = meal && typeof meal.place === 'string' ? meal.place : '';
+  const rating = meal && isStars(meal.rating) ? String(meal.rating) : 'none';
+  for (const radio of el.rating) radio.checked = radio.value === rating;
+  el.notes.value = meal && typeof meal.notes === 'string' ? meal.notes : '';
+  mealDialog.showModal();
+}
+
+$('log-meal-open').addEventListener('click', () => openMealDialog(null));
+
+// Mirrors contract §5; the server is authoritative and its message is shown on error.
+function checkMealText(value, label) {
+  const s = value.normalize('NFC').trim();
+  if (codePoints(s) > 100) fail(`${label} can be up to 100 characters`);
+  if (BAD_NAME_CHAR_RE.test(s)) fail(`${label} contains characters that aren't allowed`);
+}
+
+function checkNotes(value) {
+  const s = value.replace(/\r\n?/g, '\n').normalize('NFC').trim();
+  if (codePoints(s) > 2000) fail('Notes can be up to 2,000 characters');
+  if (BAD_NAME_CHAR_RE.test(s.replace(/\n/g, ''))) fail("Notes contain characters that aren't allowed");
+}
+
+function readMealForm(form) {
+  const el = form.elements;
+  const eatenOn = el.eaten_on.value;
+  if (!DAY_RE.test(eatenOn) || eatenOn < '1900-01-01' || eatenOn > el.eaten_on.max) {
+    fail('Choose a date between 1900 and today');
+  }
+  checkMealText(el.dish.value, '"What you ate"');
+  checkMealText(el.place.value, '"Where"');
+  const rating = form.querySelector('input[name="rating"]:checked')?.value ?? 'none';
+  if (rating !== 'none' && !/^[1-5]$/.test(rating)) fail('Stars must be 1 to 5');
+  checkNotes(el.notes.value);
+  return {
+    eaten_on: eatenOn,
+    dish: el.dish.value,
+    place: el.place.value,
+    rating: rating === 'none' ? null : Number(rating),
+    notes: el.notes.value,
+  };
+}
+
+bindForm($('meal-form'), async (form) => {
+  if (!countryDetail) fail('Country not found');
+  const body = readMealForm(form);
+  const { code } = countryDetail;
+  const token = routeToken;
+  // Closing bumps dialogToken, so a mismatch means the dialog was closed (and
+  // maybe reopened) while saving; then it mustn't be closed from here.
+  const dt = dialogToken;
+  if (mealEdit) {
+    const id = String(mealEdit.id);
+    if (!ID_RE.test(id)) fail('Meal not found');
+    await passportRequest('PATCH', `/meals/${id}`, body);
+  } else {
+    if (!CODE_RE.test(code)) fail('Country not found');
+    await passportRequest('POST', `/countries/${code}/meals`, body);
+  }
+  if (dt === dialogToken) mealDialog.close();
+  toast('Meal saved');
+  if (token === routeToken) refreshCountry(token);
+});
+
+const deleteMealDialog = setupDialog('delete-meal-dialog');
+deleteMealDialog.addEventListener('close', () => { mealDelete = null; });
+
+function openDeleteMeal(meal) {
+  mealDelete = meal;
+  const date = formatDay(meal.eaten_on);
+  const last = countryDetail.meals.filter((m) => m.mine === true).length === 1;
+  $('delete-meal-text').textContent = date ? `Delete this meal from ${date}?` : 'Delete this meal?';
+  $('delete-meal-last').textContent = last ? `${countryDetail.name} will no longer count as done for you.` : '';
+  $('delete-meal-last').hidden = !last;
+  deleteMealDialog.showModal();
+}
+
+bindForm($('delete-meal-form'), async () => {
+  if (!mealDelete) fail('Meal not found');
+  const id = String(mealDelete.id);
+  if (!ID_RE.test(id)) fail('Meal not found');
+  const token = routeToken;
+  const dt = dialogToken;
+  // The response's still_done isn't needed: the country page is re-fetched below.
+  await passportRequest('POST', `/meals/${id}/delete`);
+  if (dt === dialogToken) deleteMealDialog.close();
+  toast('Meal deleted');
+  if (token === routeToken) refreshCountry(token);
+});
 
 function personRowHtml(m, removable) {
   const badges = [];
@@ -758,6 +1179,11 @@ function showPassport(detail) {
   const owner = p.role === 'owner';
   $('passport-name').textContent = p.name;
   $('passport-owner').textContent = ownerLine(p, false);
+  const id = String(p.id);
+  for (const linkId of ['people-back', 'country-back']) {
+    $(linkId).textContent = p.name;
+    $(linkId).setAttribute('href', ID_RE.test(id) ? `#/passports/${id}` : '#/passports');
+  }
   $('passport-default').hidden = !p.is_default;
   $('make-default').hidden = p.is_default;
   $('participants-list').innerHTML = detail.participants.map((m) => personRowHtml(m, owner && !m.is_owner)).join('');
@@ -777,17 +1203,22 @@ function showPassportIfCurrent(token, detail) {
   if (token === routeToken) showPassport(detail);
 }
 
-// These errors mean the page is out of date (ownership or membership changed).
+// These errors mean the page is out of date (ownership, membership, role or
+// meals changed elsewhere); the current page is re-fetched.
 const STALE_ERRORS = [
   [403, 'Only the owner can do that'],
   [404, 'Not in this passport'],
   [409, "The owner can't leave. Delete the passport instead."],
+  [404, 'Meal not found'],
+  [403, 'Only participants can log meals'],
 ];
 
 // A request on the open passport. A stale page is re-fetched; a passport that
 // has gone sends the user to the list. The error is rethrown, and bindForm
 // toasts it because the dialog is closed by then.
 async function passportRequest(method, suffix, body) {
+  // Cleared by logout (clearPassportUi) while a dialog was submitting.
+  if (!passport) throw new QuietError();
   const token = routeToken;
   try {
     return await api(method, passportPath(passport.passport.id, suffix), body);
@@ -1244,7 +1675,7 @@ const deleteMatches = () => $('admin-delete-confirm').value.toLowerCase() === ad
 bindDialog('au-delete', 'admin-delete-dialog', () => {
   $('admin-delete-text').textContent = `Permanently delete ${adminUser.display_name}'s account? `
     + "Their passports will be handed over to another participant or deleted, and they'll be removed "
-    + "from passports shared with them. This can't be undone.";
+    + "from passports shared with them, along with their meals. This can't be undone.";
   $('admin-delete-label').textContent = `Type ${adminUser.username} to confirm`;
   $('admin-delete-submit').disabled = true;
 });

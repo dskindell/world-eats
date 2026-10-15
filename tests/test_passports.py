@@ -138,12 +138,17 @@ class PassportTestCase(ServerTestCase):
         self.assertEqual(q("SELECT id FROM users WHERE default_passport_id IS NOT NULL AND NOT EXISTS "
                            "(SELECT 1 FROM passport_members m WHERE m.passport_id = users.default_passport_id "
                            "AND m.user_id = users.id)"), [], "default pointing at a non-membership")
+        # Contract 3 §3: every meal belongs to a participant membership; no dangling foreign keys.
+        self.assertEqual(q("SELECT meals.id FROM meals JOIN passport_members m ON m.passport_id = meals.passport_id "
+                           "AND m.user_id = meals.user_id WHERE m.role != 'participant'"), [], "meal of a viewer")
+        self.assertEqual(q("PRAGMA foreign_key_check"), [], "foreign key violation")
         for user_id in self.deleted_ids:
             if q("SELECT 1 FROM users WHERE id = ?", (user_id,)):
                 continue  # the id was reused by a new account (IdReuseTests checks that one itself)
             self.assertEqual(q("SELECT id FROM passports WHERE owner_id = ?", (user_id,)), [])
             self.assertEqual(q("SELECT id FROM passport_members WHERE user_id = ?", (user_id,)), [])
             self.assertEqual(q("SELECT id FROM sessions WHERE user_id = ?", (user_id,)), [])
+            self.assertEqual(q("SELECT id FROM meals WHERE user_id = ?", (user_id,)), [])
 
 
 # --- Migration and account creation ---
@@ -168,7 +173,7 @@ class MigrationServerTests(ServerTestCase):
 
     def test_upgraded_database_works(self):
         with self.db() as conn:
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 3)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], db.MIGRATIONS[-1][0])
         resp = self.request("GET", "/api/passports", token="live-token")
         self.assertEqual(resp.status, 200)
         body = resp.json()

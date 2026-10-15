@@ -28,6 +28,7 @@ class DbTestCase(unittest.TestCase):
 LATEST = db.MIGRATIONS[-1][0]
 VERSION_1 = db.MIGRATIONS[:1]  # the 1a schema, unchanged since release
 VERSION_2 = db.MIGRATIONS[:2]  # the 1b schema
+VERSION_3 = db.MIGRATIONS[:3]  # the feature 2 schema
 
 
 class MigrationTests(DbTestCase):
@@ -40,12 +41,12 @@ class MigrationTests(DbTestCase):
 
     def test_fresh_database(self):
         db.init_schema(self.path)
-        self.assertEqual(LATEST, 3)
-        self.assertEqual(self.version(), 3)
+        self.assertEqual(LATEST, 4)
+        self.assertEqual(self.version(), 4)
         conn = db.connect(self.path)
         try:
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-            self.assertEqual(tables, {"users", "sessions", "passports", "passport_members", "sqlite_sequence"})
+            self.assertEqual(tables, {"users", "sessions", "passports", "passport_members", "meals", "sqlite_sequence"})
             self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0], "wal")
         finally:
             conn.close()
@@ -220,7 +221,7 @@ class Version3MigrationTests(DbTestCase):
         return self.query("SELECT owner_id, name, is_personal FROM passports ORDER BY owner_id")
 
     def test_upgrade(self):
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_3)
         self.assertEqual(self.version(), 3)
         # every user, disabled (bob) and pending (carol) included, has exactly one personal passport
         self.assertEqual(self.personal(), [(1, "My passport", 1), (2, "My passport", 1), (3, "My passport", 1)])
@@ -236,44 +237,44 @@ class Version3MigrationTests(DbTestCase):
                          [("admin", "h1", 0, 0), ("bob", "h2", 1, 0), ("carol", "h3", 0, 1)])
 
     def test_running_twice_is_a_no_op(self):
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_3)
         with open(self.path, "rb") as f:
             before = f.read()
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_3)
         self.assertEqual(self.version(), 3)
         with open(self.path, "rb") as f:
             self.assertEqual(f.read(), before)
 
     def test_steps_are_idempotent(self):
         # Re-running version 3's statements on a version-3 database creates nothing new.
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_3)
         conn = db.connect(self.path)
         try:
             conn.execute("PRAGMA user_version = 2")
         finally:
             conn.close()
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_3)
         self.assertEqual(self.version(), 3)
         self.assertEqual(len(self.personal()), 3)
         self.assertEqual(self.query("SELECT COUNT(*) FROM passport_members"), [(3,)])
 
     def test_owner_row_added_when_only_the_passport_exists(self):
         # A partly applied state (passport without its owner row) is completed, not duplicated.
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_3)
         conn = db.connect(self.path)
         try:
             conn.execute("DELETE FROM passport_members WHERE user_id = 2")
             conn.execute("PRAGMA user_version = 2")
         finally:
             conn.close()
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_3)
         self.assertEqual(len(self.personal()), 3)
         self.assertEqual(self.query("SELECT COUNT(*) FROM passport_members WHERE user_id = 2"), [(1,)])
 
     def test_fresh_database_has_no_passports(self):
         shutil.rmtree(self.dir)
         os.mkdir(self.dir)
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_3)
         self.assertEqual(self.version(), 3)
         self.assertEqual(self.personal(), [])
 
@@ -285,7 +286,7 @@ class Version3MigrationTests(DbTestCase):
         self.assertEqual(self.query("SELECT name FROM sqlite_master WHERE name LIKE 'passport%'"), [])
 
     def test_constraints(self):
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_3)
         conn = db.connect(self.path)
         try:
             # one personal passport per user
@@ -315,7 +316,7 @@ class Version3MigrationTests(DbTestCase):
             conn.close()
 
     def test_secure_delete_on(self):
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_3)
         conn = db.connect(self.path)
         try:
             self.assertEqual(conn.execute("PRAGMA secure_delete").fetchone()[0], 1)
@@ -356,3 +357,108 @@ class WriteLockTests(DbTestCase):
             order.append("first")
         t.join(5)
         self.assertEqual(order, ["first", "other"])
+
+
+class Version4MigrationTests(DbTestCase):
+    """Schema version 4 (contract 3 section 3) applied to a feature 2 (version 3) database."""
+
+    def setUp(self):
+        super().setUp()
+        db.init_schema(self.path, VERSION_3)
+        conn = db.connect(self.path)
+        try:
+            conn.executescript("""
+                INSERT INTO users (id, username, display_name, password_hash, is_admin, created_at, disabled)
+                    VALUES (1, 'admin', 'Admin', 'h1', 1, 100, 0), (2, 'bob', 'Bob', 'h2', 0, 200, 1);
+                INSERT INTO passports (id, name, owner_id, is_personal, created_at)
+                    VALUES (1, 'My passport', 1, 1, 100), (2, 'My passport', 2, 1, 200), (3, 'Trip', 1, 0, 300);
+                INSERT INTO passport_members (passport_id, user_id, role, created_at)
+                    VALUES (1, 1, 'participant', 100), (2, 2, 'participant', 200),
+                           (3, 1, 'participant', 300), (3, 2, 'viewer', 300);
+                UPDATE users SET default_passport_id = 3 WHERE id = 2;
+            """)
+        finally:
+            conn.close()
+
+    def query(self, sql, params=()):
+        conn = db.connect(self.path)
+        try:
+            return [tuple(r) for r in conn.execute(sql, params)]
+        finally:
+            conn.close()
+
+    def snapshot(self):
+        return [self.query("SELECT id, username, disabled, default_passport_id FROM users ORDER BY id"),
+                self.query("SELECT id, name, owner_id, is_personal FROM passports ORDER BY id"),
+                self.query("SELECT passport_id, user_id, role FROM passport_members ORDER BY id")]
+
+    def test_upgrade(self):
+        before = self.snapshot()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 4)
+        self.assertEqual(self.snapshot(), before, "existing rows untouched")
+        self.assertEqual(self.query("SELECT COUNT(*) FROM meals"), [(0,)])
+        fks = self.query("SELECT \"table\", \"from\", \"to\", on_delete FROM pragma_foreign_key_list('meals')")
+        self.assertEqual(sorted(fks), [("passport_members", "passport_id", "passport_id", "CASCADE"),
+                                       ("passport_members", "user_id", "user_id", "CASCADE")])
+        indexes = {r[0] for r in self.query("SELECT name FROM pragma_index_list('meals')")}
+        self.assertTrue({"meals_member", "meals_country", "meals_user"} <= indexes)
+        self.assertEqual(self.query("PRAGMA foreign_key_check"), [])
+
+    def test_running_twice_is_a_no_op(self):
+        db.init_schema(self.path)
+        with open(self.path, "rb") as f:
+            before = f.read()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 4)
+        with open(self.path, "rb") as f:
+            self.assertEqual(f.read(), before)
+
+    def test_steps_are_idempotent(self):
+        db.init_schema(self.path)
+        conn = db.connect(self.path)
+        try:
+            conn.execute("INSERT INTO meals (passport_id, user_id, country_code, eaten_on, created_at, updated_at) "
+                         "VALUES (3, 1, 'PE', '2026-10-11', 1, 1)")
+            conn.execute("PRAGMA user_version = 3")
+        finally:
+            conn.close()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 4)
+        self.assertEqual(self.query("SELECT passport_id, user_id, country_code FROM meals"), [(3, 1, "PE")])
+
+    def test_failure_leaves_version_3(self):
+        bad = VERSION_3 + [(4, db.MIGRATIONS[3][1] + ["NOT VALID SQL"])]
+        with self.assertRaises(sqlite3.Error):
+            db.init_schema(self.path, bad)
+        self.assertEqual(self.version(), 3)
+        self.assertEqual(self.query("SELECT name FROM sqlite_master WHERE name LIKE 'meals%'"), [])
+
+    def test_constraints_and_cascades(self):
+        db.init_schema(self.path)
+        conn = db.connect(self.path)
+        try:
+            def meal(passport_id, user_id, code="PE", eaten_on="2026-10-11", rating=None):
+                return conn.execute(
+                    "INSERT INTO meals (passport_id, user_id, country_code, eaten_on, rating, created_at, "
+                    "updated_at) VALUES (?, ?, ?, ?, ?, 1, 1)", (passport_id, user_id, code, eaten_on, rating))
+
+            for bad in ((3, 1, "PER"), (3, 1, "PE", "2026-1-01"), (3, 1, "PE", "2026-10-11", 6),
+                        (3, 1, "PE", "2026-10-11", 0), (1, 2)):  # (1, 2): bob isn't in passport 1
+                with self.subTest(bad=bad), self.assertRaises(sqlite3.IntegrityError):
+                    meal(*bad)
+            meal(3, 1)
+            meal(1, 1)
+            meal(3, 2)  # the FK can't tell a viewer from a participant; the app checks the role
+            conn.execute("DELETE FROM passport_members WHERE passport_id = 3 AND user_id = 2")
+            self.assertEqual(self.query("SELECT passport_id, user_id FROM meals ORDER BY id"), [(3, 1), (1, 1)])
+            conn.execute("DELETE FROM passports WHERE id = 3")
+            self.assertEqual(self.query("SELECT passport_id, user_id FROM meals"), [(1, 1)])
+            conn.execute("DELETE FROM passports WHERE id = 1")
+            self.assertEqual(self.query("SELECT COUNT(*) FROM meals"), [(0,)])
+            # AUTOINCREMENT: a deleted meal id is never reused
+            last = meal(2, 2).lastrowid
+            conn.execute("DELETE FROM meals WHERE id = ?", (last,))
+            self.assertGreater(meal(2, 2).lastrowid, last)
+        finally:
+            conn.close()

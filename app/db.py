@@ -98,6 +98,26 @@ MIGRATIONS = [
         "SELECT id, owner_id, 'participant', created_at FROM passports WHERE is_personal = 1 AND NOT EXISTS "
         "(SELECT 1 FROM passport_members m WHERE m.passport_id = passports.id AND m.user_id = passports.owner_id)",
     ]),
+    # Feature 3: meals. The composite FK deletes a member's meals with their membership.
+    (4, [
+        """CREATE TABLE IF NOT EXISTS meals (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            passport_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            country_code TEXT NOT NULL CHECK (length(country_code) = 2),
+            eaten_on TEXT NOT NULL CHECK (eaten_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+            dish TEXT NOT NULL DEFAULT '',
+            place TEXT NOT NULL DEFAULT '',
+            rating INTEGER CHECK (rating IS NULL OR rating BETWEEN 1 AND 5),
+            notes TEXT NOT NULL DEFAULT '',
+            created_at INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL,
+            FOREIGN KEY (passport_id, user_id) REFERENCES passport_members(passport_id, user_id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS meals_member ON meals(passport_id, user_id)",
+        "CREATE INDEX IF NOT EXISTS meals_country ON meals(passport_id, country_code)",
+        "CREATE INDEX IF NOT EXISTS meals_user ON meals(user_id)",
+    ]),
 ]
 
 
@@ -127,7 +147,7 @@ def connect(path):
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("PRAGMA busy_timeout=5000")
-    # Deleted rows (names, later meal notes) are overwritten, not left in free pages.
+    # Deleted rows (names, meal notes) are overwritten, not left in free pages.
     conn.execute("PRAGMA secure_delete=ON")
     return conn
 

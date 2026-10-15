@@ -24,6 +24,10 @@ If your user isn't UID 1000 (`id -u`), change `user:` in `docker-compose.yml` to
 
 Then open the app and create the first account on the setup page. **Complete setup before exposing the app to anyone else:** until an account exists, whoever opens the app first becomes admin.
 
+## Country list
+
+197 countries: the 193 UN member states plus Kosovo, Palestine, Taiwan and Vatican City. Codes are ISO 3166-1 alpha-2 (Kosovo uses `XK`). Regions follow the UN M49 scheme, grouped into six continents (the Americas split into North America, including Central America and the Caribbean, and South America); Taiwan and Kosovo, which M49 doesn't list, are placed in Asia and Europe. The list is in `app/countries.py`.
+
 ## Configuration
 
 Environment variables (set in `docker-compose.yml`):

@@ -18,6 +18,12 @@
   --danger-text: #ff8f8f;
   --danger-border: #6e2c2c;
   --focus: #7cc4ff;
+  --stars: #f5c451;
+  /* Country status colours, shared by the list badges and (later) the map.
+     Always paired with a text label. */
+  --status-none: #9aa4b1;
+  --status-some: #e9c46a;
+  --status-complete: #6fcf97;
   --backdrop: rgb(0 0 0 / 0.6);
   --shadow: rgb(0 0 0 / 0.45);
 
@@ -238,6 +244,7 @@ h1:focus {
 
 .field input,
 .field select,
+.field textarea,
 .pick-row select {
   display: block;
   width: 100%;
@@ -254,8 +261,14 @@ h1:focus {
 
 .field input:focus-visible,
 .field select:focus-visible,
+.field textarea:focus-visible,
 .pick-row select:focus-visible {
   border-color: var(--focus);
+}
+
+.field textarea {
+  min-height: 6rem;
+  resize: vertical;
 }
 
 .hint {
@@ -591,4 +604,142 @@ h1:focus {
 
 .preview p {
   margin: 0 0 0.25rem;
+}
+
+/* ---- Countries and meals ---- */
+
+.badge-status-none {
+  color: var(--status-none);
+  border-color: var(--status-none);
+}
+
+.badge-status-some {
+  color: var(--status-some);
+  border-color: var(--status-some);
+}
+
+.badge-status-complete {
+  color: var(--status-complete);
+  border-color: var(--status-complete);
+}
+
+.country-list {
+  margin: 0 -1rem -1rem;
+  padding: 0;
+  list-style: none;
+}
+
+.country-list > li + li {
+  border-top: 1px solid var(--border);
+}
+
+.country-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 0.5rem 1rem;
+  background: transparent;
+  color: var(--text);
+  border: 0;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.country-row:hover {
+  background: var(--surface-raised);
+}
+
+.country-list > li:last-child .country-row {
+  border-radius: 0 0 var(--radius) var(--radius);
+}
+
+.flag {
+  flex-shrink: 0;
+  font-size: 1.375rem;
+  line-height: 1;
+}
+
+.country-row-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.country-row .badges {
+  flex-shrink: 0;
+  justify-content: flex-end;
+  max-width: 55%;
+  margin-top: 0;
+}
+
+/* Gap instead of margins, so a hidden average leaves no trailing space. */
+.country-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.country-summary p {
+  margin: 0;
+}
+
+.country-status {
+  font-weight: 600;
+}
+
+/* Receives focus after a meal change re-renders the list (like h1 on view change). */
+#meals-title:focus {
+  outline: none;
+}
+
+.done-state {
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.done-mark {
+  color: var(--status-complete);
+  font-weight: 600;
+}
+
+.meal-card p {
+  margin: 0.25rem 0 0;
+}
+
+.meal-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.25rem 0.75rem;
+}
+
+.meal-date {
+  font-weight: 700;
+}
+
+.stars {
+  color: var(--stars);
+  letter-spacing: 0.1em;
+}
+
+.meal-card .meal-dish {
+  font-weight: 600;
+}
+
+.meal-card .meal-notes {
+  margin-top: 0.5rem;
+  white-space: pre-wrap;
+}
+
+.meal-card .actions {
+  margin-top: 0.75rem;
+}
+
+.star-choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 1rem;
 }

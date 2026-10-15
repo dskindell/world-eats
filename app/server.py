@@ -1,8 +1,9 @@
 """World Eats: pick a random country to eat from.
 
 Stdlib only (http.server + sqlite3). Feature 1a: first-visit setup, login,
-sessions and account settings; feature 1b: admin screen; feature 2: passports.
-See .claude/specs/1a-login-basics.md, 1b-admin-screen.md and 2-passports.md.
+sessions and account settings; feature 1b: admin screen; feature 2: passports;
+feature 3: countries and meals. See .claude/specs/1a-login-basics.md,
+1b-admin-screen.md, 2-passports.md and 3-countries-meals.md.
 
 Patterns for later features:
 - ROUTES is an ordered list of (compiled regex, {method: Route(handler, ...options)}),
@@ -35,6 +36,10 @@ Patterns for later features:
   writes call require_live_session() then member_passport(). Only then
   anything that depends on the passport or the target. Storage
   helpers live in passports.py and take `conn`.
+- Meal routes (contract 3 §4) follow the same order; meals.py holds the
+  validators (raising auth.Invalid), storage helpers and derived values.
+  Meal writes check the role and the meal's owner inside the transaction and
+  make the UPDATE/DELETE conditional on passport and user too.
 """
 
 import hashlib
@@ -57,7 +62,9 @@ from pathlib import Path
 from typing import Callable, NamedTuple
 
 import auth
+import countries
 import db
+import meals
 import passports
 from config import ConfigError, load_config, normalise_ip, split_host_port
 
@@ -761,6 +768,109 @@ def api_delete_preview(req):
     return 200, {"handed_over": handed_over, "deleted": deleted, "left": left}
 
 
+# --- Countries and meals (contract 3, sections 4-6) ---
+
+COUNTRY_NOT_FOUND_MSG = "Country not found"
+MEAL_NOT_FOUND_MSG = "Meal not found"
+PARTICIPANTS_ONLY_MSG = "Only participants can log meals"
+
+
+def require_country(code):
+    """After the membership check: the code must be one of the 197."""
+    country = countries.BY_CODE.get(code)
+    if country is None:
+        raise ApiError(404, COUNTRY_NOT_FOUND_MSG)
+    return country
+
+
+def require_participant(passport):
+    if passport["role"] != "participant":
+        raise ApiError(403, PARTICIPANTS_ONLY_MSG)
+
+
+def own_meal(req, conn, passport_id, meal_id):
+    """Inside the write transaction, after the membership check: the meal is in P (404) and the caller's (403)."""
+    meal = meals.find_meal(conn, passport_id, meal_id)
+    if meal is None:
+        raise ApiError(404, MEAL_NOT_FOUND_MSG)
+    if meal["user_id"] != req.user["id"]:
+        raise ApiError(403, "You can only change your own meals")
+    return meal
+
+
+def api_countries(req):
+    return 200, {"regions": list(countries.REGIONS),
+                 "countries": [{"code": c.code, "name": c.name, "region": c.region, "aliases": list(c.aliases)}
+                               for c in countries.COUNTRIES]}
+
+
+def api_passport_countries(req, passport_id):
+    with req.read():
+        conn = req.db()
+        passport = member_passport(req, conn, int(passport_id))
+        result = meals.country_list(conn, passport, req.user["id"])
+    return 200, result
+
+
+def api_passport_country(req, passport_id, code):
+    with req.read():
+        conn = req.db()
+        passport = member_passport(req, conn, int(passport_id))
+        country = require_country(code)
+        result = meals.country_detail(conn, passport, country, req.user["id"])
+    return 200, result
+
+
+def api_create_meal(req, passport_id, code):
+    now = req.app.now()
+    meal = meals.clean_meal(req.body, now)
+    passport_id = int(passport_id)
+    user_id = req.user["id"]
+    with req.write():
+        conn = req.db()
+        require_live_session(req, conn)
+        passport = member_passport(req, conn, passport_id)
+        require_country(code)
+        require_participant(passport)
+        message = meals.limit_reached(conn, passport_id, user_id, code)
+        if message is not None:
+            raise ApiError(409, message)
+        meal_id = meals.insert(conn, passport_id, user_id, code, meal, now)
+        row = meals.meal_by_id(conn, meal_id)
+    return 201, {"meal": meals.meal_json(row, user_id)}
+
+
+def api_update_meal(req, passport_id, meal_id):
+    now = req.app.now()
+    meal = meals.clean_meal(req.body, now)
+    passport_id, meal_id = int(passport_id), int(meal_id)
+    user_id = req.user["id"]
+    with req.write():
+        conn = req.db()
+        require_live_session(req, conn)
+        passport = member_passport(req, conn, passport_id)
+        own_meal(req, conn, passport_id, meal_id)
+        require_participant(passport)
+        if not meals.update(conn, passport_id, user_id, meal_id, meal, now):
+            raise ApiError(404, MEAL_NOT_FOUND_MSG)
+        row = meals.meal_by_id(conn, meal_id)
+    return 200, {"meal": meals.meal_json(row, user_id)}
+
+
+def api_delete_meal(req, passport_id, meal_id):
+    passport_id, meal_id = int(passport_id), int(meal_id)
+    user_id = req.user["id"]
+    with req.write():
+        conn = req.db()
+        require_live_session(req, conn)
+        member_passport(req, conn, passport_id)
+        meal = own_meal(req, conn, passport_id, meal_id)
+        if not meals.delete(conn, passport_id, user_id, meal_id):
+            raise ApiError(404, MEAL_NOT_FOUND_MSG)
+        still_done = meals.has_meal(conn, passport_id, user_id, meal["country_code"])
+    return 200, {"ok": True, "still_done": still_done}
+
+
 def literal(path):
     return re.escape(path)
 
@@ -768,6 +878,9 @@ def literal(path):
 ID = "([1-9][0-9]{0,9})"  # ASCII digits only; int() is applied after the match
 ADMIN_USER = literal("/api/admin/users/") + ID
 PASSPORT = literal("/api/passports/") + ID
+COUNTRY_CODE = "([A-Z]{2})"  # ASCII uppercase only; checked against countries.BY_CODE after the match
+PASSPORT_COUNTRY = PASSPORT + literal("/countries/") + COUNTRY_CODE
+PASSPORT_MEAL = PASSPORT + literal("/meals/") + ID
 
 
 def admin_route(handler):
@@ -792,6 +905,12 @@ ROUTES = [(re.compile(pattern), methods) for pattern, methods in [
     (PASSPORT + literal("/members"), {"POST": Route(api_add_member)}),
     (PASSPORT + literal("/members/") + ID + literal("/remove"), {"POST": Route(api_remove_member)}),
     (PASSPORT + literal("/leave"), {"POST": Route(api_leave_passport)}),
+    (literal("/api/countries"), {"GET": Route(api_countries)}),
+    (PASSPORT + literal("/countries"), {"GET": Route(api_passport_countries)}),
+    (PASSPORT_COUNTRY, {"GET": Route(api_passport_country)}),
+    (PASSPORT_COUNTRY + literal("/meals"), {"POST": Route(api_create_meal)}),
+    (PASSPORT_MEAL, {"PATCH": Route(api_update_meal)}),
+    (PASSPORT_MEAL + literal("/delete"), {"POST": Route(api_delete_meal)}),
     (literal("/api/admin/users"), {"GET": admin_route(api_admin_users),
                                    "POST": admin_route(api_admin_create_user)}),
     (ADMIN_USER, {"PATCH": admin_route(api_admin_update_user)}),
@@ -1173,7 +1292,8 @@ class Handler(BaseHTTPRequestHandler):
         self.send_body(200, data, content_type, "no-cache")
 
     def send_json(self, status, payload):
-        body = json.dumps(payload).encode("utf-8")
+        # Raw UTF-8 rather than \u escapes (contract 3 §6); stored strings never contain surrogates.
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_body(status, body, "application/json; charset=utf-8", "no-store")
 
     def send_body(self, status, body, content_type, cache_control):
