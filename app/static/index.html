@@ -3,10 +3,160 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
   <title>World Eats</title>
+  <!-- Empty data: icon stops the browser requesting /favicon.ico (not in the static map). -->
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
 </head>
 <body>
-  <h1>World Eats</h1>
-  <p>Nothing here yet.</p>
+  <header class="topbar" id="topbar" hidden>
+    <a class="brand" href="#/">World Eats</a>
+    <div class="menu-wrap">
+      <button type="button" class="menu-button" id="menu-button" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu">
+        <span class="menu-name" id="menu-name"></span>
+        <span class="caret" aria-hidden="true">&#9662;</span>
+      </button>
+      <div class="menu" id="user-menu" role="menu" aria-labelledby="menu-button" hidden>
+        <a class="menu-item" role="menuitem" href="#/account">Account settings</a>
+        <button type="button" class="menu-item" role="menuitem" id="menu-logout">Log out</button>
+      </div>
+    </div>
+  </header>
+
+  <main class="main">
+    <section class="view" id="view-loading">
+      <p class="muted" id="loading-text">Loading&hellip;</p>
+      <p class="form-error" id="load-error" role="alert" hidden></p>
+      <button type="button" class="btn" id="load-retry" hidden>Try again</button>
+    </section>
+
+    <section class="view" id="view-setup" aria-labelledby="setup-title" hidden>
+      <h1 id="setup-title" tabindex="-1">Set up World Eats</h1>
+      <p class="muted">Create the first account. It will be an admin.</p>
+      <form class="card stack" id="setup-form" method="post" novalidate>
+        <div class="field">
+          <label for="setup-username">Username</label>
+          <input id="setup-username" name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" required aria-describedby="setup-username-hint">
+          <p class="hint" id="setup-username-hint">3-32 characters: letters, digits, . _ -</p>
+        </div>
+        <div class="field">
+          <label for="setup-display-name">Display name</label>
+          <input id="setup-display-name" name="display_name" type="text" required>
+        </div>
+        <div class="field">
+          <label for="setup-password">Password</label>
+          <input id="setup-password" name="password" type="password" autocomplete="new-password" required aria-describedby="setup-password-hint">
+          <p class="hint" id="setup-password-hint">12-128 characters</p>
+        </div>
+        <p class="form-error" role="alert" hidden></p>
+        <button type="submit" class="btn btn-primary">Create account</button>
+      </form>
+    </section>
+
+    <section class="view" id="view-login" aria-labelledby="login-title" hidden>
+      <h1 id="login-title" tabindex="-1">Log in</h1>
+      <form class="card stack" id="login-form" method="post" novalidate>
+        <div class="field">
+          <label for="login-username">Username</label>
+          <input id="login-username" name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" required>
+        </div>
+        <div class="field">
+          <label for="login-password">Password</label>
+          <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+        </div>
+        <p class="form-error" role="alert" hidden></p>
+        <button type="submit" class="btn btn-primary">Log in</button>
+      </form>
+    </section>
+
+    <section class="view" id="view-home" aria-labelledby="home-title" hidden>
+      <h1 id="home-title" tabindex="-1">Welcome, <span id="home-name"></span>.</h1>
+      <p class="muted">Passports are coming soon.</p>
+    </section>
+
+    <section class="view" id="view-account" aria-labelledby="account-title" hidden>
+      <h1 id="account-title" tabindex="-1">Account settings</h1>
+
+      <dl class="card info">
+        <dt>Username</dt>
+        <dd id="account-username"></dd>
+      </dl>
+
+      <section class="card" aria-labelledby="name-title">
+        <h2 id="name-title">Display name</h2>
+        <form class="stack" id="name-form" method="post" novalidate>
+          <div class="field">
+            <label for="account-display-name">Display name</label>
+            <input id="account-display-name" name="display_name" type="text" required>
+          </div>
+          <p class="form-error" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="password-title">
+        <h2 id="password-title">Change password</h2>
+        <form class="stack" id="password-form" method="post" novalidate>
+          <div class="field">
+            <label for="current-password">Current password</label>
+            <input id="current-password" name="current_password" type="password" autocomplete="current-password" required>
+          </div>
+          <div class="field">
+            <label for="new-password">New password</label>
+            <input id="new-password" name="new_password" type="password" autocomplete="new-password" required aria-describedby="new-password-hint">
+            <p class="hint" id="new-password-hint">12-128 characters</p>
+          </div>
+          <div class="field">
+            <label for="confirm-password">Confirm new password</label>
+            <input id="confirm-password" name="confirm_password" type="password" autocomplete="new-password" required>
+          </div>
+          <p class="form-error" role="alert" hidden></p>
+          <button type="submit" class="btn btn-primary">Save</button>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="sessions-title">
+        <h2 id="sessions-title">Sessions</h2>
+        <button type="button" class="btn" id="logout-all-open">Log out everywhere</button>
+      </section>
+
+      <section class="card card-danger" aria-labelledby="danger-title">
+        <h2 id="danger-title">Danger zone</h2>
+        <button type="button" class="btn btn-danger" id="delete-open">Delete account</button>
+      </section>
+    </section>
+  </main>
+
+  <dialog class="dialog" id="logout-all-dialog" aria-labelledby="logout-all-title">
+    <form class="stack" id="logout-all-form" method="post" novalidate>
+      <h2 id="logout-all-title">Log out everywhere</h2>
+      <p>Log out of World Eats on all devices, including this one?</p>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">Log out everywhere</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="delete-dialog" aria-labelledby="delete-title">
+    <form class="stack" id="delete-form" method="post" novalidate>
+      <h2 id="delete-title">Delete account</h2>
+      <p>This permanently deletes your account. This can't be undone.</p>
+      <div class="field">
+        <label for="delete-password">Password</label>
+        <input id="delete-password" name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="submit" class="btn btn-danger">Delete my account</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>

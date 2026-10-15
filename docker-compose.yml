@@ -6,8 +6,14 @@ services:
     image: world-eats:local
     container_name: world-eats
     restart: unless-stopped
+    # Run as the host user that owns ./data (the image default, 10001, can't write to it).
+    user: "1000:1000"
     ports:
       - "7197:8080"
+    environment:
+      WORLD_EATS_ALLOWED_HOSTS: localhost
+    volumes:
+      - ./data:/data
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=5)"]
       interval: 30s
