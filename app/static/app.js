@@ -157,13 +157,15 @@ const ID_PATTERN = '[1-9][0-9]{0,9}';
 const ID_RE = new RegExp(`^${ID_PATTERN}$`);
 const CODE_RE = /^[A-Z]{2}$/;
 
-// Ordered hash routes; the first match wins. Anything unmatched goes to #/.
+// Ordered hash routes, matched against the part before any '?'; the first
+// match wins. Anything unmatched goes to #/. Only routes with `query` keep a
+// query part (the passport page's search, sort and filters).
 // The country route takes any last segment so a bad code can be reported
 // (enterCountry checks it against CODE_RE and the country list).
 const ROUTES = [
   { re: /^#\/$/, enter: enterHome },
   { re: /^#\/passports$/, enter: enterPassports },
-  { re: new RegExp(`^#/passports/(${ID_PATTERN})$`), enter: enterPassport },
+  { re: new RegExp(`^#/passports/(${ID_PATTERN})$`), query: true, enter: enterPassport },
   { re: new RegExp(`^#/passports/(${ID_PATTERN})/people$`), enter: enterPeople },
   { re: new RegExp(`^#/passports/(${ID_PATTERN})/countries/([^/]*)$`), enter: enterCountry },
   { re: /^#\/account$/, enter: enterAccount },
@@ -194,22 +196,30 @@ function showView(name) {
   if (name !== 'loading') contentShown = true;
 }
 
+// Splits a hash at the first '?' into the route path and the query (null if none).
+function splitHash(hash) {
+  const i = hash.indexOf('?');
+  return i < 0 ? [hash, null] : [hash.slice(0, i), hash.slice(i + 1)];
+}
+
 function render() {
   routeToken += 1;
+  clearTimeout(searchTimer);
   closeMenu();
   closeDialogs();
   if (state.setupRequired) return showView('setup');
   if (!state.user) return showView('login');
   if (state.user.must_change_password) return showView('force-password');
   updateUserText();
-  const hash = location.hash;
-  const route = ROUTES.find((r) => r.re.test(hash));
+  const [path, query] = splitHash(location.hash);
+  const route = ROUTES.find((r) => r.re.test(path));
   if (!route || (route.admin && !state.user.is_admin)) {
     history.replaceState(null, '', '#/');
     return enterHome(null, routeToken);
   }
-  const [, param, param2] = hash.match(route.re);
-  return route.enter(param, routeToken, param2);
+  if (query !== null && !route.query) history.replaceState(null, '', path);
+  const [, param, param2] = path.match(route.re);
+  return route.enter(param, routeToken, param2, query);
 }
 
 function showLoading() {
@@ -611,6 +621,7 @@ function clearPassportUi() {
   mealEdit = null;
   mealDelete = null;
   dropCountries();
+  clearBrowse();
   dialogToken += 1;
   for (const id of ['passport-list', 'participants-list', 'viewers-list', 'new-passport-people',
     'add-person-user', 'default-passport', 'delete-preview', 'country-list', 'country-participants', 'meal-list']) {
@@ -736,13 +747,18 @@ bindForm($('new-passport-form'), async () => {
 // ---- Countries: the fixed list, fetched once per session ----
 
 let countriesCache = null;
+// Region names in the server's order, cached with the countries (filters and region sort).
+let regionsCache = null;
 // Bumped when the cache is dropped, so a load started before logout can't refill it.
 let countriesGen = 0;
 
 function dropCountries() {
   countriesCache = null;
+  regionsCache = null;
   countriesGen += 1;
 }
+
+const regionList = () => regionsCache || [];
 
 // Resolves to a Map of code -> {code, name, region}; only well-formed codes are kept.
 async function getCountries() {
@@ -752,7 +768,11 @@ async function getCountries() {
   const list = (Array.isArray(data.countries) ? data.countries : [])
     .filter((c) => c && typeof c.code === 'string' && CODE_RE.test(c.code) && typeof c.name === 'string');
   const byCode = new Map(list.map((c) => [c.code, c]));
-  if (gen === countriesGen) countriesCache = byCode;
+  const regions = (Array.isArray(data.regions) ? data.regions : []).filter((r) => typeof r === 'string');
+  if (gen === countriesGen) {
+    countriesCache = byCode;
+    regionsCache = [...new Set(regions)];
+  }
   return byCode;
 }
 
@@ -828,12 +848,19 @@ function showPassportLoadError(err, id) {
   }
 }
 
-async function enterPassport(id, token) {
+// The query part of the address holds the search, sort and filters; it's
+// validated against this passport and rewritten in canonical form.
+async function enterPassport(id, token, _code, query) {
+  resetSearch();
   const rest = await loadPassport(id, token, [() => api('GET', passportPath(id, '/countries')), getCountries]);
   if (!rest) return;
   const [summary, countries] = rest;
+  browse = parseBrowse(query, id, browseOptions(passport.passport));
   showCountryList(summary, countries);
   showView('passport');
+  const hash = browseHash(browse);
+  if (location.hash !== hash) history.replaceState(null, '', hash);
+  if (browse.q.trim()) startSearch();
 }
 
 async function enterPeople(id, token) {
@@ -865,6 +892,8 @@ async function enterCountry(id, token, code) {
   const rest = await loadPassport(id, token, [() => api('GET', passportPath(id, `/countries/${code}`))]);
   if (!rest) return;
   showCountry(code, rest[0], countries);
+  // Back returns to the list as it was searched and filtered (rebuilt from validated state).
+  $('country-back').setAttribute('href', browse && browse.id === id ? browseHash(browse) : `#/passports/${id}`);
   showView('country');
 }
 
@@ -890,7 +919,7 @@ function progressText(progress, rows, personal) {
   return `Fully complete: ${count(progress.complete)} / ${total}${mine}`;
 }
 
-function countryRowHtml(s, country, personal) {
+function countryRowHtml(s, country, personal, hint) {
   const badges = [];
   if (personal) {
     if (personalDone(s)) badges.push(['✓ Done', 'badge-status-complete']);
@@ -903,15 +932,20 @@ function countryRowHtml(s, country, personal) {
     + `<span class="flag" aria-hidden="true">${esc(flagFor(country.code))}</span>`
     + `<span class="country-row-name">${esc(country.name)}</span>`
     + `<span class="badges">${badgesHtml(badges)}</span>`
+    + (hint ? `<span class="country-row-hint">${esc(hint)}</span>` : '')
     + '</button></li>';
 }
 
 function showCountryList(data, countries) {
   const personal = passport.passport.is_personal === true;
+  const progress = data.progress && typeof data.progress === 'object' ? data.progress : {};
   const rows = (Array.isArray(data.countries) ? data.countries : [])
     .filter((s) => s && typeof s.code === 'string' && CODE_RE.test(s.code) && countries.has(s.code));
-  $('passport-progress').textContent = progressText(data.progress || {}, rows, personal);
-  $('country-list').innerHTML = rows.map((s) => countryRowHtml(s, countries.get(s.code), personal)).join('');
+  $('passport-progress').textContent = progressText(progress, rows, personal);
+  const active = progress.active_participants;
+  browseRows = rows.map((s) => rowModel(s, countries.get(s.code), personal, active));
+  showBrowseControls();
+  applyBrowse();
 }
 
 $('country-list').addEventListener('click', (event) => {
@@ -919,9 +953,392 @@ $('country-list').addEventListener('click', (event) => {
   if (!row || !passport || !countriesCache) return;
   const code = row.dataset.code;
   const id = String(passport.passport.id);
+  // Text typed within the debounce would be lost by render(), so record it in
+  // the address first: Back and the country page's back link then keep it.
+  if (searchTimer) {
+    clearTimeout(searchTimer);
+    searchTimer = 0;
+    if (onBrowsePage()) {
+      browse.q = $('browse-q').value;
+      writeBrowseAddress();
+    }
+  }
   if (CODE_RE.test(code) && countriesCache.has(code) && ID_RE.test(id)) {
     location.hash = `#/passports/${id}/countries/${code}`;
   }
+});
+
+// ---- Passport page: search, sort and filters (kept in the address) ----
+
+const SORTS = ['name', 'region', 'completed_desc', 'completed_asc', 'rating', 'progress'];
+const STATUS_KEYS = ['not_started', 'some', 'complete'];
+const PERSONAL_STATUS_KEYS = ['not_started', 'complete'];
+const MINE_KEYS = ['done', 'not_done'];
+const STARS_RE = /^[1-5]$/;
+const MAX_QUERY = 200;
+
+// The open passport list's validated state ({id, opts, q, sort, status, mine,
+// region, stars}), its rows, and the search results. Dropped by clearBrowse().
+let browse = null;
+let browseRows = [];
+let search = { on: false, pending: false, matches: null };
+// Bumped by every new search (and on clearing), so older responses are dropped.
+let searchToken = 0;
+let searchTimer = 0;
+
+// Which parameters apply depends on the passport: personal passports have two
+// statuses, and only participants of shared passports have "mine".
+function browseOptions(p) {
+  const personal = p.is_personal === true;
+  return {
+    personal,
+    statuses: personal ? PERSONAL_STATUS_KEYS : STATUS_KEYS,
+    mine: !personal && (p.role === 'owner' || p.role === 'participant'),
+  };
+}
+
+// The allowed values present in a comma-separated list, in the allowed order.
+function pickList(raw, allowed) {
+  if (raw === null) return [];
+  const parts = new Set(raw.split(','));
+  return allowed.filter((v) => parts.has(v));
+}
+
+// Each parameter is used only if it appears once and is valid; anything
+// else is ignored, never an error.
+function parseBrowse(query, id, opts) {
+  const params = new URLSearchParams(query || '');
+  const one = (key) => (params.getAll(key).length === 1 ? params.get(key) : null);
+  const q = one('q');
+  const sort = one('sort');
+  const mine = one('mine');
+  const stars = one('stars');
+  return {
+    id,
+    opts,
+    q: q !== null && codePoints(q) <= MAX_QUERY ? q : '',
+    sort: SORTS.includes(sort) ? sort : 'name',
+    status: pickList(one('status'), opts.statuses),
+    mine: opts.mine && MINE_KEYS.includes(mine) ? mine : '',
+    region: pickList(one('region'), regionList()),
+    stars: stars !== null && STARS_RE.test(stars) ? Number(stars) : 0,
+  };
+}
+
+const validQuery = (b) => b.q.trim() !== '' && codePoints(b.q) <= MAX_QUERY;
+const filterCount = (b) => [b.status.length, b.mine, b.region.length, b.stars].filter(Boolean).length;
+
+// The canonical address, built only from validated values; defaults are omitted.
+function browseHash(b) {
+  const id = String(b.id);
+  if (!ID_RE.test(id)) return '#/passports';
+  const params = new URLSearchParams();
+  if (validQuery(b)) params.set('q', b.q);
+  if (b.sort !== 'name') params.set('sort', b.sort);
+  if (b.status.length) params.set('status', b.status.join(','));
+  if (b.mine) params.set('mine', b.mine);
+  if (b.region.length) params.set('region', b.region.join(','));
+  if (b.stars) params.set('stars', String(b.stars));
+  const query = params.toString();
+  return query ? `#/passports/${id}?${query}` : `#/passports/${id}`;
+}
+
+const onBrowsePage = () => browse !== null && currentView === 'passport'
+  && splitHash(location.hash)[0] === `#/passports/${browse.id}`;
+
+// Records the state in the address without a history entry (and without a hashchange).
+function writeBrowseAddress() {
+  if (!onBrowsePage()) return;
+  const hash = browseHash(browse);
+  if (location.hash !== hash) history.replaceState(null, '', hash);
+}
+
+// Sort and filter inputs, checked once per load.
+function rowModel(s, country, personal, active) {
+  const doneCount = Number.isInteger(s.done_count) && s.done_count >= 0 ? s.done_count : 0;
+  let progress = Number.isInteger(active) && active > 0 ? doneCount / active : 0;
+  if (personal) progress = personalDone(s) ? 1 : 0;
+  return {
+    s,
+    country,
+    code: s.code,
+    name: country.name,
+    region: typeof country.region === 'string' ? country.region : '',
+    rating: typeof s.avg_rating === 'number' && Number.isFinite(s.avg_rating) ? s.avg_rating : null,
+    completedOn: typeof s.completed_on === 'string' && DAY_RE.test(s.completed_on) ? s.completed_on : null,
+    progress,
+  };
+}
+
+// On a personal passport "Done" is any status other than not started.
+function statusMatches(r, status, personal) {
+  if (personal && status === 'complete') return personalDone(r.s);
+  return r.s.status === status;
+}
+
+function rowShown(r, b) {
+  if (search.on && !(search.matches && search.matches.has(r.code))) return false;
+  if (b.status.length && !b.status.some((st) => statusMatches(r, st, b.opts.personal))) return false;
+  if (b.mine && (r.s.done_by_me === true) !== (b.mine === 'done')) return false;
+  if (b.region.length && !b.region.includes(r.region)) return false;
+  return !b.stars || (r.rating !== null && r.rating >= b.stars);
+}
+
+const byName = (a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' });
+
+// Orders by one value; rows without a value (null) go last in either direction.
+function byValue(get, desc) {
+  return (a, b) => {
+    const x = get(a);
+    const y = get(b);
+    if (x === null || y === null) return (x === null) - (y === null);
+    if (x === y) return 0;
+    return (x < y) === desc ? 1 : -1;
+  };
+}
+
+function sortCompare(sort) {
+  const regions = regionList();
+  const regionIndex = (r) => (regions.includes(r.region) ? regions.indexOf(r.region) : null);
+  switch (sort) {
+    case 'region': return byValue(regionIndex, false);
+    case 'completed_desc': return byValue((r) => r.completedOn, true);
+    case 'completed_asc': return byValue((r) => r.completedOn, false);
+    case 'rating': return byValue((r) => r.rating, true);
+    case 'progress': return byValue((r) => r.progress, true);
+    default: return () => 0;
+  }
+}
+
+// Region headings are plain list items (not buttons) and carry no data attributes.
+// A region missing from the region list sorts last and gets no heading.
+function countryListHtml(rows, b) {
+  const regions = regionList();
+  let html = '';
+  let region = null;
+  for (const r of rows) {
+    if (b.sort === 'region' && r.region !== region) {
+      region = r.region;
+      if (regions.includes(region)) html += `<li class="region-heading"><h3>${esc(region)}</h3></li>`;
+    }
+    const hint = search.on && search.matches ? search.matches.get(r.code) : '';
+    html += countryRowHtml(r.s, r.country, b.opts.personal, hint);
+  }
+  return html;
+}
+
+function applyBrowse() {
+  if (!browse) return;
+  const b = browse;
+  const compare = sortCompare(b.sort);
+  // Ties fall back to name A-Z.
+  const rows = browseRows.filter((r) => rowShown(r, b)).sort((x, y) => compare(x, y) || byName(x, y));
+  $('country-list').innerHTML = countryListHtml(rows, b);
+  const n = filterCount(b);
+  $('filters-open').textContent = n ? `Filters (${n})` : 'Filters';
+  $('browse-count-row').hidden = !(b.q.trim() || n);
+  $('browse-count').textContent = search.pending ? 'Searching…' : `Showing ${rows.length} of ${browseRows.length}`;
+  $('browse-empty').hidden = search.pending || rows.length > 0;
+}
+
+// Sets the bar's controls and labels from the state (personal passports say "Done").
+function showBrowseControls() {
+  const personal = browse.opts.personal;
+  $('browse-q').value = browse.q;
+  $('browse-sort').value = browse.sort;
+  $('sort-completed-desc').textContent = personal ? 'Done (newest)' : 'Completed (newest)';
+  $('sort-completed-asc').textContent = personal ? 'Done (oldest)' : 'Completed (oldest)';
+  showSearchError('');
+}
+
+function showSearchError(message) {
+  $('browse-error').textContent = message;
+  $('browse-error').hidden = !message;
+}
+
+// Stops any pending or in-flight search; its result will be ignored.
+function resetSearch() {
+  clearTimeout(searchTimer);
+  searchTimer = 0;
+  searchToken += 1;
+  search = { on: false, pending: false, matches: null };
+}
+
+function clearBrowse() {
+  resetSearch();
+  browse = null;
+  browseRows = [];
+  $('browse-q').value = '';
+  $('browse-sort').value = 'name';
+  $('filters-open').textContent = 'Filters';
+  $('browse-count').textContent = '';
+  $('browse-count-row').hidden = true;
+  $('browse-empty').hidden = true;
+  $('filters-regions').replaceChildren();
+  showSearchError('');
+}
+
+// Hint lines explain a match found in a meal rather than the name. Only string
+// fields are used; the prefixes are fixed text.
+function hintText(meal) {
+  if (!meal || typeof meal !== 'object') return '';
+  const str = (v) => (typeof v === 'string' ? v : '');
+  const notes = str(meal.notes_excerpt);
+  if (notes) return `Meal notes: ${notes}`;
+  const dish = str(meal.dish);
+  const place = str(meal.place);
+  if (dish && place) return `Meal: ${dish} at ${place}`;
+  if (dish) return `Meal: ${dish}`;
+  return place ? `Meal: at ${place}` : '';
+}
+
+// code -> hint text ('' for a name match); unknown or malformed codes are ignored.
+function parseMatches(data) {
+  const matches = new Map();
+  for (const m of Array.isArray(data.matches) ? data.matches : []) {
+    if (m && typeof m.code === 'string' && CODE_RE.test(m.code) && countriesCache && countriesCache.has(m.code)) {
+      matches.set(m.code, hintText(m.meal));
+    }
+  }
+  return matches;
+}
+
+// Searches for browse.q. While a request is in flight the previous results stay
+// listed (none on first load) and the count line says "Searching…".
+async function startSearch() {
+  const t = ++searchToken;
+  const { q } = browse;
+  showSearchError('');
+  if (!q.trim() || codePoints(q) > MAX_QUERY) {
+    search = { on: false, pending: false, matches: null };
+    if (q.trim()) showSearchError('Search can be up to 200 characters');
+    applyBrowse();
+    return;
+  }
+  search = { on: true, pending: true, matches: search.on ? search.matches : null };
+  applyBrowse();
+  const token = routeToken;
+  let data;
+  try {
+    data = await api('POST', passportPath(browse.id, '/search'), { q });
+  } catch (err) {
+    // A response for a page the user has left is ignored, errors included.
+    if (t !== searchToken || token !== routeToken) return;
+    if (err.status === 404 && err.message === 'Passport not found') {
+      toast(err.message, 'error');
+      replaceRoute('#/passports');
+      return;
+    }
+    search = { on: false, pending: false, matches: null };
+    showSearchError(err.message);
+    applyBrowse();
+    return;
+  }
+  if (t !== searchToken || token !== routeToken || !browse) return;
+  search = { on: true, pending: false, matches: parseMatches(data) };
+  applyBrowse();
+}
+
+$('browse-q').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  const token = routeToken;
+  searchTimer = setTimeout(() => {
+    searchTimer = 0;
+    // A render since typing (cleared timers aside) or another page: do nothing.
+    if (token !== routeToken || !onBrowsePage()) return;
+    browse.q = $('browse-q').value;
+    startSearch();
+    writeBrowseAddress();
+  }, 300);
+});
+
+$('browse-sort').addEventListener('change', () => {
+  const sort = $('browse-sort').value;
+  if (!onBrowsePage() || !SORTS.includes(sort)) return;
+  browse.sort = sort;
+  applyBrowse();
+  writeBrowseAddress();
+});
+
+$('browse-clear').addEventListener('click', () => {
+  if (!onBrowsePage()) return;
+  resetSearch();
+  Object.assign(browse, { q: '', sort: 'name', status: [], mine: '', region: [], stars: 0 });
+  showBrowseControls();
+  applyBrowse();
+  writeBrowseAddress();
+  $('browse-q').focus();
+});
+
+// ---- Passport page: filters dialog (applied live) ----
+
+const filtersDialog = $('filters-dialog');
+
+function regionCheck(region) {
+  const label = document.createElement('label');
+  label.className = 'check';
+  const input = document.createElement('input');
+  input.type = 'checkbox';
+  input.name = 'region';
+  input.value = region;
+  input.checked = browse.region.includes(region);
+  label.append(input, ` ${region}`);
+  return label;
+}
+
+function syncFilters() {
+  const form = $('filters-form');
+  const { opts } = browse;
+  $('filter-status-none').textContent = opts.personal ? 'Not done' : 'Not started';
+  $('filter-status-complete').textContent = opts.personal ? 'Done' : 'Fully complete';
+  $('filter-status-some-row').hidden = opts.personal;
+  for (const box of form.querySelectorAll('input[name="status"]')) box.checked = browse.status.includes(box.value);
+  $('filters-mine').hidden = !opts.mine;
+  for (const radio of form.querySelectorAll('input[name="mine"]')) radio.checked = radio.value === browse.mine;
+  $('filters-region-group').hidden = regionList().length === 0;
+  $('filters-regions').replaceChildren(...regionList().map(regionCheck));
+  $('filters-stars').value = browse.stars ? String(browse.stars) : '';
+}
+
+const checkedValues = (form, name) => new Set([...form.querySelectorAll(`input[name="${name}"]:checked`)]
+  .map((input) => input.value));
+
+function readFilters() {
+  const form = $('filters-form');
+  const status = checkedValues(form, 'status');
+  const regions = checkedValues(form, 'region');
+  const mine = form.querySelector('input[name="mine"]:checked')?.value;
+  const stars = $('filters-stars').value;
+  browse.status = browse.opts.statuses.filter((v) => status.has(v));
+  browse.mine = browse.opts.mine && MINE_KEYS.includes(mine) ? mine : '';
+  browse.region = regionList().filter((r) => regions.has(r));
+  browse.stars = STARS_RE.test(stars) ? Number(stars) : 0;
+}
+
+$('filters-open').addEventListener('click', () => {
+  if (!onBrowsePage()) return;
+  syncFilters();
+  filtersDialog.showModal();
+});
+
+$('filters-form').addEventListener('change', () => {
+  if (!onBrowsePage()) return;
+  readFilters();
+  applyBrowse();
+  writeBrowseAddress();
+});
+
+$('filters-clear').addEventListener('click', () => {
+  if (!onBrowsePage()) return;
+  Object.assign(browse, { status: [], mine: '', region: [], stars: 0 });
+  syncFilters();
+  applyBrowse();
+  writeBrowseAddress();
+});
+
+$('filters-form').addEventListener('submit', (event) => {
+  event.preventDefault();
+  filtersDialog.close();
 });
 
 $('people-open').addEventListener('click', () => {

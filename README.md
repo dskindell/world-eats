@@ -51,7 +51,7 @@ The app serves plain HTTP; put your own reverse proxy in front for HTTPS.
 ## Security notes
 
 - **Give World Eats its own hostname.** Browsers don't keep cookies separate by port, so if you reach the app by IP address and port (e.g. `http://192.0.2.10:7197`), every other web service on that IP receives your World Eats login cookie. A compromised service there could use it to act as you, including as an admin. Use a dedicated hostname (and HTTPS) before you rely on the app, and before you create a second admin.
-- **Deleting an account removes its data from the database file** (the app overwrites deleted content), but **backups made before the deletion still contain it**.
+- **Deleting an account removes its data from the database file** (the app overwrites deleted content), but **backups made before the deletion still contain it**, and old copies can linger in the database's `-wal` file until SQLite next checkpoints it.
 - **Every logged-in user can see every username** (to add people to passports), so anyone with an account can lock another account out for 15 minutes by typing wrong passwords. An admin can use Unlock.
 - **Admins can reset any password, which gives them access to that account.** The user will notice, because they're logged out everywhere and their password stops working. (Planned: when self-service password recovery is added, admin resets will be removed.)
 

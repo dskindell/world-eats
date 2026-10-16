@@ -94,6 +94,32 @@
       <section class="card" aria-labelledby="countries-title">
         <h2 id="countries-title">Countries</h2>
         <p class="muted" id="passport-progress"></p>
+        <div class="browse-bar">
+          <div class="field">
+            <label class="visually-hidden" for="browse-q">Search countries and meals</label>
+            <input id="browse-q" type="search" placeholder="Search countries and meals" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search">
+            <p class="form-error browse-error" id="browse-error" role="alert" hidden></p>
+          </div>
+          <div class="browse-row">
+            <div class="field browse-sort">
+              <label for="browse-sort">Sort</label>
+              <select id="browse-sort">
+                <option value="name">Name (A-Z)</option>
+                <option value="region">Region</option>
+                <option value="completed_desc" id="sort-completed-desc">Completed (newest)</option>
+                <option value="completed_asc" id="sort-completed-asc">Completed (oldest)</option>
+                <option value="rating">Rating</option>
+                <option value="progress">Progress</option>
+              </select>
+            </div>
+            <button type="button" class="btn" id="filters-open" aria-haspopup="dialog">Filters</button>
+          </div>
+        </div>
+        <div class="browse-count" id="browse-count-row" hidden>
+          <p id="browse-count" role="status" aria-live="polite"></p>
+          <button type="button" class="btn" id="browse-clear">Clear</button>
+        </div>
+        <p class="muted" id="browse-empty" hidden>No countries match.</p>
         <ul class="country-list" id="country-list" aria-labelledby="countries-title"></ul>
       </section>
     </section>
@@ -536,6 +562,45 @@
       <div class="actions">
         <button type="button" class="btn" data-close>Cancel</button>
         <button type="submit" class="btn btn-danger">Delete meal</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Changes apply as they're made; Done only closes. app.js fills the regions
+       and adapts the status labels and Mine group to the passport. -->
+  <dialog class="dialog" id="filters-dialog" aria-labelledby="filters-title">
+    <form class="stack" id="filters-form" method="post" novalidate>
+      <h2 id="filters-title">Filters</h2>
+      <fieldset class="group">
+        <legend>Status</legend>
+        <label class="check"><input type="checkbox" name="status" value="not_started"> <span id="filter-status-none">Not started</span></label>
+        <label class="check" id="filter-status-some-row"><input type="checkbox" name="status" value="some"> Some</label>
+        <label class="check"><input type="checkbox" name="status" value="complete"> <span id="filter-status-complete">Fully complete</span></label>
+      </fieldset>
+      <fieldset class="group" id="filters-mine">
+        <legend>Mine</legend>
+        <label class="check"><input type="radio" name="mine" value="" checked> Any</label>
+        <label class="check"><input type="radio" name="mine" value="done"> Done by me</label>
+        <label class="check"><input type="radio" name="mine" value="not_done"> Not done by me</label>
+      </fieldset>
+      <fieldset class="group" id="filters-region-group">
+        <legend>Region</legend>
+        <div id="filters-regions"></div>
+      </fieldset>
+      <div class="field">
+        <label for="filters-stars">Minimum stars</label>
+        <select id="filters-stars" name="stars">
+          <option value="">Any</option>
+          <option value="1">1+</option>
+          <option value="2">2+</option>
+          <option value="3">3+</option>
+          <option value="4">4+</option>
+          <option value="5">5</option>
+        </select>
+      </div>
+      <div class="actions">
+        <button type="button" class="btn" id="filters-clear">Clear filters</button>
+        <button type="submit" class="btn btn-primary">Done</button>
       </div>
     </form>
   </dialog>

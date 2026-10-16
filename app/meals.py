@@ -12,6 +12,7 @@ import unicodedata
 import auth
 import countries
 import passports
+import search
 
 MAX_PER_COUNTRY = 100
 MAX_PER_PASSPORT = 5000
@@ -138,21 +139,25 @@ def limit_reached(conn, passport_id, user_id, code):
     return None
 
 
+def search_text(meal):
+    return search.meal_search_text(meal["dish"], meal["place"], meal["notes"])
+
+
 def insert(conn, passport_id, user_id, code, meal, now):
     cur = conn.execute(
         "INSERT INTO meals (passport_id, user_id, country_code, eaten_on, dish, place, rating, notes, "
-        "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "search_text, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (passport_id, user_id, code, meal["eaten_on"], meal["dish"], meal["place"], meal["rating"],
-         meal["notes"], now, now))
+         meal["notes"], search_text(meal), now, now))
     return cur.lastrowid
 
 
 def update(conn, passport_id, user_id, meal_id, meal, now):
     """Only the caller's own meal in this passport; returns False if no row matched."""
     cur = conn.execute(
-        "UPDATE meals SET eaten_on = ?, dish = ?, place = ?, rating = ?, notes = ?, updated_at = ? "
-        "WHERE id = ? AND passport_id = ? AND user_id = ?",
-        (meal["eaten_on"], meal["dish"], meal["place"], meal["rating"], meal["notes"], now,
+        "UPDATE meals SET eaten_on = ?, dish = ?, place = ?, rating = ?, notes = ?, search_text = ?, "
+        "updated_at = ? WHERE id = ? AND passport_id = ? AND user_id = ?",
+        (meal["eaten_on"], meal["dish"], meal["place"], meal["rating"], meal["notes"], search_text(meal), now,
          meal_id, passport_id, user_id))
     return cur.rowcount == 1
 
@@ -207,7 +212,8 @@ def country_list(conn, passport, caller_id):
         mine += done
         summaries.append({"code": country.code, "status": status, "done_by_me": None if is_viewer else done,
                           "meal_count": entry["meals"], "avg_rating": average(entry["sum"], entry["count"]),
-                          "completed_on": completed_on})
+                          "completed_on": completed_on,
+                          "done_count": sum(user_id in entry["first_on"] for user_id in active_ids)})
     return {"progress": {"total": len(countries.COUNTRIES), "complete": complete,
                          "mine": None if is_viewer else mine, "active_participants": len(active_ids)},
             "countries": summaries}

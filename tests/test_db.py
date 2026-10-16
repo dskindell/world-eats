@@ -8,6 +8,8 @@ import unittest
 
 from tests.helpers import db
 
+import search  # noqa: E402  (app/ is on sys.path via tests.helpers)
+
 
 class DbTestCase(unittest.TestCase):
     def setUp(self):
@@ -16,6 +18,13 @@ class DbTestCase(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.dir, ignore_errors=True)
+
+    def query(self, sql, params=()):
+        conn = db.connect(self.path)
+        try:
+            return [tuple(r) for r in conn.execute(sql, params)]
+        finally:
+            conn.close()
 
     def version(self):
         conn = sqlite3.connect(self.path)
@@ -29,6 +38,7 @@ LATEST = db.MIGRATIONS[-1][0]
 VERSION_1 = db.MIGRATIONS[:1]  # the 1a schema, unchanged since release
 VERSION_2 = db.MIGRATIONS[:2]  # the 1b schema
 VERSION_3 = db.MIGRATIONS[:3]  # the feature 2 schema
+VERSION_4 = db.MIGRATIONS[:4]  # the feature 3 schema
 
 
 class MigrationTests(DbTestCase):
@@ -41,8 +51,8 @@ class MigrationTests(DbTestCase):
 
     def test_fresh_database(self):
         db.init_schema(self.path)
-        self.assertEqual(LATEST, 4)
-        self.assertEqual(self.version(), 4)
+        self.assertEqual(LATEST, 5)
+        self.assertEqual(self.version(), 5)
         conn = db.connect(self.path)
         try:
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
@@ -210,13 +220,6 @@ class Version3MigrationTests(DbTestCase):
         finally:
             conn.close()
 
-    def query(self, sql, params=()):
-        conn = db.connect(self.path)
-        try:
-            return [tuple(r) for r in conn.execute(sql, params)]
-        finally:
-            conn.close()
-
     def personal(self):
         return self.query("SELECT owner_id, name, is_personal FROM passports ORDER BY owner_id")
 
@@ -380,13 +383,6 @@ class Version4MigrationTests(DbTestCase):
         finally:
             conn.close()
 
-    def query(self, sql, params=()):
-        conn = db.connect(self.path)
-        try:
-            return [tuple(r) for r in conn.execute(sql, params)]
-        finally:
-            conn.close()
-
     def snapshot(self):
         return [self.query("SELECT id, username, disabled, default_passport_id FROM users ORDER BY id"),
                 self.query("SELECT id, name, owner_id, is_personal FROM passports ORDER BY id"),
@@ -394,7 +390,7 @@ class Version4MigrationTests(DbTestCase):
 
     def test_upgrade(self):
         before = self.snapshot()
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_4)
         self.assertEqual(self.version(), 4)
         self.assertEqual(self.snapshot(), before, "existing rows untouched")
         self.assertEqual(self.query("SELECT COUNT(*) FROM meals"), [(0,)])
@@ -406,16 +402,16 @@ class Version4MigrationTests(DbTestCase):
         self.assertEqual(self.query("PRAGMA foreign_key_check"), [])
 
     def test_running_twice_is_a_no_op(self):
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_4)
         with open(self.path, "rb") as f:
             before = f.read()
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_4)
         self.assertEqual(self.version(), 4)
         with open(self.path, "rb") as f:
             self.assertEqual(f.read(), before)
 
     def test_steps_are_idempotent(self):
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_4)
         conn = db.connect(self.path)
         try:
             conn.execute("INSERT INTO meals (passport_id, user_id, country_code, eaten_on, created_at, updated_at) "
@@ -423,7 +419,7 @@ class Version4MigrationTests(DbTestCase):
             conn.execute("PRAGMA user_version = 3")
         finally:
             conn.close()
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_4)
         self.assertEqual(self.version(), 4)
         self.assertEqual(self.query("SELECT passport_id, user_id, country_code FROM meals"), [(3, 1, "PE")])
 
@@ -435,7 +431,7 @@ class Version4MigrationTests(DbTestCase):
         self.assertEqual(self.query("SELECT name FROM sqlite_master WHERE name LIKE 'meals%'"), [])
 
     def test_constraints_and_cascades(self):
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_4)
         conn = db.connect(self.path)
         try:
             def meal(passport_id, user_id, code="PE", eaten_on="2026-10-11", rating=None):
@@ -462,3 +458,107 @@ class Version4MigrationTests(DbTestCase):
             self.assertGreater(meal(2, 2).lastrowid, last)
         finally:
             conn.close()
+
+
+class Version5MigrationTests(DbTestCase):
+    """Schema version 5 (contract 4 section 3) applied to a feature 3 (version 4) database."""
+
+    NOTES = "Line one\n  line two\n\nTrès bon"
+
+    def setUp(self):
+        super().setUp()
+        db.init_schema(self.path, VERSION_4)
+        conn = db.connect(self.path)
+        try:
+            conn.executescript("""
+                INSERT INTO users (id, username, display_name, password_hash, is_admin, created_at)
+                    VALUES (1, 'admin', 'Admin', 'h1', 1, 100), (2, 'bob', 'Bob', 'h2', 0, 200);
+                INSERT INTO passports (id, name, owner_id, is_personal, created_at)
+                    VALUES (1, 'My passport', 1, 1, 100), (2, 'My passport', 2, 1, 200), (3, 'Trip', 1, 0, 300);
+                INSERT INTO passport_members (passport_id, user_id, role, created_at)
+                    VALUES (1, 1, 'participant', 100), (2, 2, 'participant', 200),
+                           (3, 1, 'participant', 300), (3, 2, 'participant', 300);
+            """)
+            meals = [(3, 1, "FR", "2026-10-01", "Crème Brûlée", "Chez Ødile", 5, self.NOTES),
+                     (3, 2, "PL", "2026-10-02", "Pierogi", "Łódź", None, ""),
+                     (1, 1, "PE", "2026-10-03", "", "", None, ""),
+                     (2, 2, "SA", "2026-10-04", "\ufdfa" * 100, "ＣＥＶＩＣＨＥ", 3, "\ufdfa" * 2000)]
+            conn.executemany("INSERT INTO meals (passport_id, user_id, country_code, eaten_on, dish, place, rating, "
+                             "notes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 7, 8)", meals)
+        finally:
+            conn.close()
+
+    def meals(self):
+        return self.query("SELECT id, passport_id, user_id, country_code, eaten_on, dish, place, rating, notes, "
+                          "created_at, updated_at FROM meals ORDER BY id")
+
+    def search_texts(self):
+        return [r[0] for r in self.query("SELECT search_text FROM meals ORDER BY id")]
+
+    def test_upgrade(self):
+        before = self.meals()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 5)
+        self.assertEqual(self.meals(), before, "other columns unchanged")
+        texts = self.search_texts()
+        self.assertEqual(texts[:3], ["creme brulee\nchez odile\nline one line two tres bon",
+                                     "pierogi\nlodz\n", "\n\n"])
+        dish, place, notes = texts[3].split("\n")
+        self.assertEqual((len(dish), place, len(notes)), (200, "ceviche", 4000), "cut at the caps")
+        self.assertEqual(notes, search.fold("\ufdfa" * 2000)[:4000])
+        for row, text in zip(before, texts):
+            self.assertEqual(text, search.meal_search_text(row[5], row[6], row[8]))
+        column = self.query("SELECT type, \"notnull\", dflt_value FROM pragma_table_info('meals') "
+                            "WHERE name = 'search_text'")
+        self.assertEqual(column, [("TEXT", 1, "''")])
+
+    def test_new_rows_get_the_default(self):
+        db.init_schema(self.path)
+        conn = db.connect(self.path)
+        try:
+            conn.execute("INSERT INTO meals (passport_id, user_id, country_code, eaten_on, created_at, updated_at) "
+                         "VALUES (3, 1, 'JP', '2026-10-11', 1, 1)")
+        finally:
+            conn.close()
+        self.assertEqual(self.search_texts()[-1], "")
+
+    def test_running_twice_is_a_no_op(self):
+        db.init_schema(self.path)
+        with open(self.path, "rb") as f:
+            before = f.read()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 5)
+        with open(self.path, "rb") as f:
+            self.assertEqual(f.read(), before)
+
+    def test_steps_are_idempotent(self):
+        db.init_schema(self.path)
+        expected = self.search_texts()
+        conn = db.connect(self.path)
+        try:
+            conn.execute("UPDATE meals SET search_text = 'stale'")
+            conn.execute("PRAGMA user_version = 4")
+        finally:
+            conn.close()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 5)
+        self.assertEqual(self.search_texts(), expected, "the backfill recomputes every row")
+
+    def test_empty_meals_table(self):
+        conn = db.connect(self.path)
+        try:
+            conn.execute("DELETE FROM meals")
+        finally:
+            conn.close()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 5)
+
+    def test_failure_leaves_version_4(self):
+        before = self.meals()
+        bad = VERSION_4 + [(5, db.MIGRATIONS[4][1] + ["NOT VALID SQL"])]
+        with self.assertRaises(sqlite3.Error):
+            db.init_schema(self.path, bad)
+        self.assertEqual(self.version(), 4)
+        self.assertEqual(self.meals(), before)
+        names = {r[0] for r in self.query("SELECT name FROM pragma_table_info('meals')")}
+        self.assertNotIn("search_text", names, "ALTER TABLE rolled back with the rest")

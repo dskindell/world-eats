@@ -7,6 +7,8 @@ version. Never edit a released version's statements; add a new version. Keep
 statements safe on existing data: CREATE ... IF NOT EXISTS, and add columns
 with add_column() (checks PRAGMA table_info first; NOT NULL columns need a default).
 A statement is either an SQL string or a callable taking the connection.
+Callable steps may import domain modules (e.g. search for migration 5), so
+those modules must never import db.
 
 Write transactions: only top-level request handlers open one (`with
 req.write():`). Helpers that write take the connection and assume the caller
@@ -21,6 +23,8 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
+
+import search
 
 DB_NAME = "world-eats.db"
 
@@ -38,6 +42,13 @@ def add_column(table, column, declaration):
             # Identifiers and declaration are fixed strings from MIGRATIONS, never input.
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")  # security-lint: ok fixed identifiers from MIGRATIONS, checked against IDENTIFIER_RE
     return run
+
+
+def backfill_search_text(conn):
+    """Migration 5: meals.search_text from each meal's dish, place and notes."""
+    rows = conn.execute("SELECT id, dish, place, notes FROM meals").fetchall()
+    conn.executemany("UPDATE meals SET search_text = ? WHERE id = ?",
+                     [(search.meal_search_text(row[1], row[2], row[3]), row[0]) for row in rows])
 
 
 MIGRATIONS = [
@@ -117,6 +128,11 @@ MIGRATIONS = [
         "CREATE INDEX IF NOT EXISTS meals_member ON meals(passport_id, user_id)",
         "CREATE INDEX IF NOT EXISTS meals_country ON meals(passport_id, country_code)",
         "CREATE INDEX IF NOT EXISTS meals_user ON meals(user_id)",
+    ]),
+    # Feature 4: folded meal text for search. Recomputed for every meal, so safe to re-run.
+    (5, [
+        add_column("meals", "search_text", "TEXT NOT NULL DEFAULT ''"),
+        backfill_search_text,
     ]),
 ]
 

@@ -2,8 +2,8 @@
 
 Stdlib only (http.server + sqlite3). Feature 1a: first-visit setup, login,
 sessions and account settings; feature 1b: admin screen; feature 2: passports;
-feature 3: countries and meals. See .claude/specs/1a-login-basics.md,
-1b-admin-screen.md, 2-passports.md and 3-countries-meals.md.
+feature 3: countries and meals; feature 4: search. See .claude/specs/1a-login-basics.md,
+1b-admin-screen.md, 2-passports.md, 3-countries-meals.md and 4-browse.md.
 
 Patterns for later features:
 - ROUTES is an ordered list of (compiled regex, {method: Route(handler, ...options)}),
@@ -40,6 +40,9 @@ Patterns for later features:
   validators (raising auth.Invalid), storage helpers and derived values.
   Meal writes check the role and the meal's owner inside the transaction and
   make the UPDATE/DELETE conditional on passport and user too.
+- Search (contract 4 §4) is a read sent as POST: validate the query without the
+  database, take a search slot (503 when busy), then `with req.read():`,
+  member_passport(), and the queries under a time budget (503 when it runs out).
 """
 
 import hashlib
@@ -66,6 +69,7 @@ import countries
 import db
 import meals
 import passports
+import search
 from config import ConfigError, load_config, normalise_ip, split_host_port
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -101,6 +105,9 @@ SESSION_TTL = 2592000  # 30 days
 RENEW_AFTER = 3600
 MAX_COOKIE_VALUE = 100
 TEMP_PASSWORD_TTL = 604800  # 7 days
+SEARCH_SLOTS = 4  # searches running at once
+SEARCH_WAIT = 1  # seconds to wait for a search slot
+SEARCH_BUDGET = 5  # seconds of query time per search
 
 # Generic texts for errors from the stdlib's parse_request() (its own messages can
 # echo the request) and for our own send_error() calls.
@@ -111,6 +118,7 @@ STDLIB_ERRORS = {
 }
 
 LOCKED_MSG = "Too many failed attempts. Try again in a few minutes."
+BUSY_MSG = "Server busy, try again"
 
 
 class ApiError(Exception):
@@ -871,6 +879,29 @@ def api_delete_meal(req, passport_id, meal_id):
     return 200, {"ok": True, "still_done": still_done}
 
 
+def api_search(req, passport_id):
+    terms = search.clean_query(req.body.get("q"))
+    passport_id = int(passport_id)
+    app = req.app
+    if not app.search_slots.acquire(timeout=app.search_wait):
+        raise ApiError(503, BUSY_MSG)
+    try:
+        limit = search.Budget(app.search_budget)
+        conn = req.db()
+        try:
+            with req.read():
+                member_passport(req, conn, passport_id)
+                with search.budget(conn, limit):
+                    matches = search.find(conn, passport_id, terms)
+        except sqlite3.OperationalError:
+            if not limit.expired:
+                raise
+            raise ApiError(503, BUSY_MSG) from None
+    finally:
+        app.search_slots.release()
+    return 200, {"matches": matches}
+
+
 def literal(path):
     return re.escape(path)
 
@@ -911,6 +942,7 @@ ROUTES = [(re.compile(pattern), methods) for pattern, methods in [
     (PASSPORT_COUNTRY + literal("/meals"), {"POST": Route(api_create_meal)}),
     (PASSPORT_MEAL, {"PATCH": Route(api_update_meal)}),
     (PASSPORT_MEAL + literal("/delete"), {"POST": Route(api_delete_meal)}),
+    (PASSPORT + literal("/search"), {"POST": Route(api_search)}),
     (literal("/api/admin/users"), {"GET": admin_route(api_admin_users),
                                    "POST": admin_route(api_admin_create_user)}),
     (ADMIN_USER, {"PATCH": admin_route(api_admin_update_user)}),
@@ -1087,7 +1119,7 @@ class Handler(BaseHTTPRequestHandler):
         except auth.Invalid as e:
             self.send_json(400, {"error": str(e)})
         except auth.Busy:
-            self.send_json(503, {"error": "Server busy, try again"})
+            self.send_json(503, {"error": BUSY_MSG})
         except (ConnectionError, TimeoutError):
             raise
         except Exception as e:
@@ -1380,7 +1412,8 @@ class App(ThreadingHTTPServer):
     request_queue_size = 128  # listen backlog; the stdlib default of 5 drops bursts of connections
 
     def __init__(self, config, address=None, static_dir=STATIC_DIR, hasher=None, clock=time.time,
-                 log_stream=None, max_connections=64, request_deadline=20.0, body_deadline=BODY_DEADLINE):
+                 log_stream=None, max_connections=64, request_deadline=20.0, body_deadline=BODY_DEADLINE,
+                 search_slots=SEARCH_SLOTS, search_wait=SEARCH_WAIT, search_budget=SEARCH_BUDGET):
         self.config = config
         self.db_path = os.path.join(config.data_dir, db.DB_NAME)
         self.static_dir = Path(static_dir)
@@ -1394,6 +1427,9 @@ class App(ThreadingHTTPServer):
         self.connection_slots = threading.BoundedSemaphore(max_connections)
         self.reaper = Reaper(request_deadline)
         self.body_deadline = body_deadline
+        self.search_slots = threading.BoundedSemaphore(search_slots)
+        self.search_wait = search_wait
+        self.search_budget = search_budget
         self.xff_warned = False
 
         db.init_schema(self.db_path)

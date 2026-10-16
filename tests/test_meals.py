@@ -10,7 +10,7 @@ from tests.test_passports import NOT_FOUND, PENDING, PERSON_KEYS, PassportTestCa
 import countries  # noqa: E402  (app/ is on sys.path via tests.helpers)
 import db  # noqa: E402
 
-SUMMARY_KEYS = {"code", "status", "done_by_me", "meal_count", "avg_rating", "completed_on"}
+SUMMARY_KEYS = {"code", "status", "done_by_me", "meal_count", "avg_rating", "completed_on", "done_count"}
 PROGRESS_KEYS = {"total", "complete", "mine", "active_participants"}
 DETAIL_KEYS = {"country", "status", "completed_on", "avg_rating", "participants", "meals"}
 PARTICIPANT_KEYS = PERSON_KEYS | {"is_owner", "done", "completed_on"}
@@ -448,13 +448,13 @@ class DerivedTests(MealTestCase):
         listing = self.countries_of(self.pid)
         self.assertEqual(listing["progress"], {"total": 197, "complete": 0, "mine": 0, "active_participants": 2})
         self.assertTrue(all(c["status"] == "not_started" and c["done_by_me"] is False and c["meal_count"] == 0
-                            and c["avg_rating"] is None and c["completed_on"] is None
+                            and c["avg_rating"] is None and c["completed_on"] is None and c["done_count"] == 0
                             for c in listing["countries"]))
 
         self.meal_id(self.pid, "PE", eaten_on="2026-10-11")
         pe = self.summary(self.pid, "PE")
         self.assertEqual(pe, {"code": "PE", "status": "some", "done_by_me": True, "meal_count": 1,
-                              "avg_rating": None, "completed_on": None})
+                              "avg_rating": None, "completed_on": None, "done_count": 1})
         self.assertFalse(self.summary(self.pid, "PE", token=self.bob_token)["done_by_me"])
         self.assertIsNone(self.summary(self.pid, "PE", token=self.sam_token)["done_by_me"])
 
