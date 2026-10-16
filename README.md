@@ -11,6 +11,7 @@ Runs on host port 7197. Set `WORLD_EATS_ALLOWED_HOSTS` to the hostname you use t
 - `app/server.py` - Python stdlib HTTP server + SQLite, no dependencies.
 - `app/static/` - frontend (vanilla HTML/JS/CSS, no build step).
 - `tests/` - `unittest` suite (stdlib only).
+- `tools/build_map.py` - builds `app/static/map.json` from Natural Earth data (run by hand; not in the image).
 - Data: one SQLite database in `/data` inside the container, `./data` next to the compose file on the host (gitignored).
 
 ## Run
@@ -85,6 +86,20 @@ docker exec world-eats python -c "import sqlite3; sqlite3.connect('/data/world-e
 ```
 
 This writes `backup.db` next to the database (`./data/backup.db` on the host); copy that file to your backup location.
+
+## World map
+
+Made with [Natural Earth](https://www.naturalearthdata.com/) (public domain). The map shows Natural Earth's de facto borders; the app's country list counts Kosovo, Palestine and Taiwan as countries, and draws Somaliland, Northern Cyprus and Siachen Glacier as part of Somalia, Cyprus and India.
+
+`app/static/map.json` is generated, not hand-edited. To regenerate it (the app itself never downloads anything):
+
+```bash
+mkdir /tmp/ne && curl -fL -o /tmp/ne/ne_50m_admin_0_countries.geojson \
+  https://raw.githubusercontent.com/nvkelso/natural-earth-vector/9380cca83db5f9aef52d5e762765100745f84b27/geojson/ne_50m_admin_0_countries.geojson
+python3 -I tools/build_map.py /tmp/ne/ne_50m_admin_0_countries.geojson app/static/map.json
+```
+
+The script refuses any input whose SHA-256 isn't `3e458fc036ad0a66411f2c1e6cac49c5d7bfb81cb1123bc513b22511a2b7fdeb`. Download outside the repo (`*.geojson` is gitignored).
 
 ## Tests
 

@@ -210,6 +210,8 @@ function render() {
   const intent = mealIntent;
   mealIntent = null;
   stopPick();
+  closeMapCard();
+  finishMapAnim();
   closeMenu();
   closeDialogs();
   if (state.setupRequired) return showView('setup');
@@ -307,6 +309,7 @@ function clearSessionUi() {
   closeDialogs();
   document.querySelectorAll('form').forEach((f) => f.reset());
   clearPassportUi();
+  dropMap();
 }
 
 function onSessionLost() {
@@ -440,7 +443,9 @@ $('user-menu').addEventListener('keydown', (event) => {
 });
 
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !$('user-menu').hidden) closeMenu(true);
+  if (event.key !== 'Escape') return;
+  if (!$('user-menu').hidden) closeMenu(true);
+  else if (mapCardCode !== null && !document.querySelector('dialog[open]')) closeMapCard();
 });
 
 document.addEventListener('pointerdown', (event) => {
@@ -631,6 +636,7 @@ function clearPassportUi() {
   mealDelete = null;
   dropCountries();
   clearBrowse();
+  resetMapUi();
   dialogToken += 1;
   for (const id of ['passport-list', 'participants-list', 'viewers-list', 'new-passport-people',
     'add-person-user', 'default-passport', 'delete-preview', 'country-list', 'country-participants', 'meal-list']) {
@@ -865,8 +871,16 @@ async function enterPassport(id, token, _code, query) {
   if (!rest) return;
   const [summary, countries] = rest;
   browse = parseBrowse(query, id, browseOptions(passport.passport));
+  // Zoom and pan are kept when coming back to the same passport, not for another one.
+  if (mapPassportId !== id) {
+    cancelMapAnim();
+    clearMapPick();
+    resetMapView();
+    mapPassportId = id;
+  }
   showCountryList(summary, countries);
   showView('passport');
+  showViewMode();
   updatePickButton();
   const hash = browseHash(browse);
   if (location.hash !== hash) history.replaceState(null, '', hash);
@@ -967,8 +981,12 @@ function showCountryList(data, countries) {
 
 $('country-list').addEventListener('click', (event) => {
   const row = event.target.closest('[data-code]');
-  if (!row || !passport || !countriesCache) return;
-  const code = row.dataset.code;
+  if (row) openCountry(row.dataset.code);
+});
+
+// Shared by the list rows and the map card's Open button.
+function openCountry(code) {
+  if (!passport || !countriesCache) return;
   const id = String(passport.passport.id);
   // Text typed within the debounce would be lost by render(), so record it in
   // the address first: Back and the country page's back link then keep it.
@@ -983,7 +1001,7 @@ $('country-list').addEventListener('click', (event) => {
   if (CODE_RE.test(code) && countriesCache.has(code) && ID_RE.test(id)) {
     location.hash = `#/passports/${id}/countries/${code}`;
   }
-});
+}
 
 // ---- Passport page: search, sort and filters (kept in the address) ----
 
@@ -995,7 +1013,7 @@ const STARS_RE = /^[1-5]$/;
 const MAX_QUERY = 200;
 
 // The open passport list's validated state ({id, opts, q, sort, status, mine,
-// region, stars}), its rows, and the search results. Dropped by clearBrowse().
+// region, stars, view}), its rows, and the search results. Dropped by clearBrowse().
 let browse = null;
 let browseRows = [];
 let search = { on: false, pending: false, matches: null };
@@ -1030,6 +1048,7 @@ function parseBrowse(query, id, opts) {
   const sort = one('sort');
   const mine = one('mine');
   const stars = one('stars');
+  const view = one('view');
   return {
     id,
     opts,
@@ -1039,6 +1058,7 @@ function parseBrowse(query, id, opts) {
     mine: opts.mine && MINE_KEYS.includes(mine) ? mine : '',
     region: pickList(one('region'), regionList()),
     stars: stars !== null && STARS_RE.test(stars) ? Number(stars) : 0,
+    view: view === 'list' ? 'list' : 'map',
   };
 }
 
@@ -1056,6 +1076,7 @@ function browseHash(b) {
   if (b.mine) params.set('mine', b.mine);
   if (b.region.length) params.set('region', b.region.join(','));
   if (b.stars) params.set('stars', String(b.stars));
+  if (b.view === 'list') params.set('view', 'list');
   const query = params.toString();
   return query ? `#/passports/${id}?${query}` : `#/passports/${id}`;
 }
@@ -1157,7 +1178,13 @@ function applyBrowse() {
   if (!browse) return;
   const b = browse;
   const rows = visibleRows();
-  $('country-list').innerHTML = countryListHtml(rows, b);
+  // The map is the one place the map is coloured; the hidden list isn't built.
+  if (b.view === 'map') {
+    $('country-list').replaceChildren();
+    colourMap(rows);
+  } else {
+    $('country-list').innerHTML = countryListHtml(rows, b);
+  }
   const n = filterCount(b);
   $('filters-open').textContent = n ? `Filters (${n})` : 'Filters';
   $('browse-count-row').hidden = !(b.q.trim() || n);
@@ -1373,6 +1400,712 @@ $('filters-form').addEventListener('submit', (event) => {
   filtersDialog.close();
 });
 
+// ---- Passport page: world map ----
+
+// The map file is fetched once per page load and validated; the SVG holds only
+// svg/g/path/circle elements whose attributes are validated path data, checked
+// codes, app-computed numbers and fixed class names. All colour is in CSS.
+const SVG_NS = 'http://www.w3.org/2000/svg'; // security-lint: ok XML namespace name for createElementNS, never fetched
+const MAP_PATH_RE = /^[MLZ0-9.,\-]+$/;
+const MAP_MAX_PATH = 200000;
+const MAP_MAX_COUNTRIES = 197;
+const MAP_MAX_OTHER = 500;
+const MAP_MAX_SCALE = 12;
+const MAP_STEP = 1.5;
+const MAP_DOT_PX = 4;
+const MAP_TAP_MS = 300;
+const MAP_TAP_PX = 8;
+// A dot is only 8 px across, so a tap this close to one counts as a tap on it.
+const MAP_DOT_REACH_PX = 14;
+const MAP_STATUS_CLASSES = { not_started: 'status-none', some: 'status-some', complete: 'status-complete' };
+const MAP_CARD_LABELS = { not_started: 'Not started', some: 'Some participants', complete: 'Fully complete' };
+
+const mapSvg = $('map-svg');
+// Parsed map.json ({width, height, countries, dots, other}); dropped on logout.
+let mapData = null;
+let mapBuilt = false;
+// Bumped by resetMapUi() (logout); a map.json response from an older generation is discarded.
+let mapGen = 0;
+// Identifies the load in flight (generation, route and passport), so a stale one doesn't block a new one.
+let mapFetchKey = '';
+// Coloured shapes ({el, code, base}) and dots ({el, code, x, y}).
+let mapShapes = [];
+let mapDots = [];
+// The visible part of the map in map units ({x, y, w, h}).
+let mapView = null;
+let mapPassportId = null;
+// Pointers currently down on the map (id -> {x, y}) and the gesture they form.
+const mapPointers = new Map();
+let mapGesture = null;
+let mapCardCode = null;
+// The pending pointermove frame, and the codes shown by the last colouring
+// that wasn't waiting for a search ({id, codes}).
+let mapMoveFrame = 0;
+let mapShown = null;
+
+function svgEl(tag, cls) {
+  const el = document.createElementNS(SVG_NS, tag);
+  if (cls) el.setAttribute('class', cls);
+  return el;
+}
+
+const isPlainObject = (v) => v !== null && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype;
+const mapSize = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 1 && n <= 10000;
+const mapPath = (d) => typeof d === 'string' && d.length > 0 && d.length <= MAP_MAX_PATH && MAP_PATH_RE.test(d);
+const finiteIn = (n, max) => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= max;
+
+// Returns the usable parts of map.json, or null if it can't be drawn. Bad
+// entries are skipped; only codes in the country list are kept.
+function parseMap(json) {
+  if (!isPlainObject(json) || !mapSize(json.width) || !mapSize(json.height)) return null;
+  if (!isPlainObject(json.countries) || !countriesCache) return null;
+  const { width, height } = json;
+  const countries = new Map();
+  for (const code of Object.keys(json.countries)) {
+    if (countries.size >= MAP_MAX_COUNTRIES) break;
+    if (!CODE_RE.test(code) || !countriesCache.has(code)) continue;
+    const d = json.countries[code];
+    if (mapPath(d)) countries.set(code, d);
+  }
+  if (countries.size === 0) return null;
+  const dots = new Map();
+  for (const code of isPlainObject(json.dots) ? Object.keys(json.dots) : []) {
+    if (!CODE_RE.test(code) || !countries.has(code)) continue;
+    const p = json.dots[code];
+    if (Array.isArray(p) && p.length === 2 && finiteIn(p[0], width) && finiteIn(p[1], height)) dots.set(code, [p[0], p[1]]);
+  }
+  const other = Array.isArray(json.other) ? json.other.slice(0, MAP_MAX_OTHER).filter(mapPath) : [];
+  return { width, height, countries, dots, other };
+}
+
+function showMapStatus(message, failed = false) {
+  const el = $('map-status');
+  el.textContent = message;
+  el.hidden = !message;
+  el.classList.toggle('form-error', failed);
+  $('map-retry').hidden = !failed;
+}
+
+// Not api(): its 401 handling is for /api/ requests.
+async function loadMap() {
+  const gen = mapGen;
+  const token = routeToken;
+  const id = browse.id;
+  const key = `${gen}:${token}:${id}`;
+  if (mapFetchKey === key) return;
+  mapFetchKey = key;
+  showMapStatus('Loading the map…');
+  let json = null;
+  try {
+    const res = await fetch('/map.json', { credentials: 'same-origin' });
+    if (res.ok) json = await res.json();
+  } catch {
+    json = null;
+  }
+  if (mapFetchKey === key) mapFetchKey = '';
+  // Stale: logged out, another page, or another passport since the request.
+  if (gen !== mapGen || token !== routeToken || !browse || browse.id !== id) return;
+  const parsed = parseMap(json);
+  if (!parsed) {
+    showMapStatus("The map couldn't be loaded.", true);
+    return;
+  }
+  mapData = parsed;
+  if (onBrowsePage() && browse.view === 'map') {
+    ensureMap();
+    applyBrowse();
+  }
+}
+
+$('map-retry').addEventListener('click', () => {
+  if (onBrowsePage() && browse.view === 'map') loadMap();
+});
+
+function buildMap() {
+  const other = svgEl('g');
+  for (const d of mapData.other) {
+    const path = svgEl('path', 'map-other');
+    path.setAttribute('d', d);
+    other.append(path);
+  }
+  const lands = svgEl('g');
+  for (const [code, d] of mapData.countries) {
+    const path = svgEl('path', 'map-country');
+    path.setAttribute('d', d);
+    path.setAttribute('data-code', code);
+    lands.append(path);
+    mapShapes.push({ el: path, code, base: 'map-country' });
+  }
+  const dots = svgEl('g');
+  for (const [code, [x, y]] of mapData.dots) {
+    const dot = svgEl('circle', 'map-dot');
+    dot.setAttribute('cx', String(x));
+    dot.setAttribute('cy', String(y));
+    dot.setAttribute('data-code', code);
+    dots.append(dot);
+    mapShapes.push({ el: dot, code, base: 'map-dot' });
+    mapDots.push({ el: dot, code, x, y });
+  }
+  mapSvg.replaceChildren(other, lands, dots);
+  mapBuilt = true;
+  resetMapView();
+}
+
+// Shows the map (building it, or loading the file first). Colouring is
+// applyBrowse()'s job; a pick made before the map was built is zoomed to here.
+function ensureMap() {
+  if (!mapBuilt && mapData) {
+    buildMap();
+    jumpToEarlyPick();
+  }
+  $('map-body').hidden = !mapBuilt;
+  if (!mapBuilt) {
+    loadMap();
+    return;
+  }
+  showMapStatus('');
+  updateDotRadius();
+}
+
+// The switch and which of list, Sort and map are shown (also used by the reset).
+function setViewUi(map) {
+  $('view-list').setAttribute('aria-pressed', String(!map));
+  $('view-map').setAttribute('aria-pressed', String(map));
+  $('browse-sort-field').hidden = map;
+  $('country-list').hidden = map;
+  $('map-section').hidden = !map;
+}
+
+// The List / Map switch, the controls that differ between the two, and the
+// legend. Colouring is left to applyBrowse().
+function showViewMode() {
+  const map = browse.view === 'map';
+  setViewUi(map);
+  const { personal, mine } = browse.opts;
+  $('legend-none').textContent = personal ? 'Not done' : 'Not started';
+  $('legend-complete').textContent = personal ? 'Done' : 'Fully complete';
+  $('legend-some').hidden = personal;
+  $('legend-todo').hidden = !mine;
+  if (map) ensureMap();
+}
+
+$('view-switch').addEventListener('click', (event) => {
+  const button = event.target.closest('[data-view]');
+  if (!button || !onBrowsePage()) return;
+  const view = button.dataset.view === 'map' ? 'map' : 'list';
+  if (browse.view === view) return;
+  browse.view = view;
+  closeMapCard();
+  cancelMapAnim();
+  clearMapPick();
+  resetMapView();
+  showViewMode();
+  applyBrowse();
+  writeBrowseAddress();
+});
+
+// Classes from fixed literals only; `status` is looked up, never copied.
+function mapClass(base, row, shown, personal, todo, picked) {
+  const cls = [base];
+  if (row) {
+    let status = typeof row.s.status === 'string' && Object.hasOwn(MAP_STATUS_CLASSES, row.s.status)
+      ? row.s.status : null;
+    if (personal && status) status = personalDone(row.s) ? 'complete' : 'not_started';
+    if (status) cls.push(MAP_STATUS_CLASSES[status]);
+    if (todo && row.s.done_by_me === false) cls.push('map-todo');
+  }
+  if (!shown) cls.push('map-dim');
+  if (picked) cls.push('map-picked');
+  return cls.join(' ');
+}
+
+// The codes to leave undimmed: the list's rows, except while a search is in
+// flight, when the last settled set for this passport is kept (none dimmed if
+// there isn't one) instead of dimming everything.
+function mapShownCodes(rows) {
+  if (!search.pending) {
+    mapShown = { id: browse.id, codes: new Set(rows.map((r) => r.code)) };
+    return mapShown.codes;
+  }
+  if (mapShown && mapShown.id === browse.id) return mapShown.codes;
+  return new Set(browseRows.map((r) => r.code));
+}
+
+// `todo` (the outline) is browse.opts.mine: participants of shared passports
+// only. Outlined shapes are moved to the end of their group so neighbours
+// drawn later don't cover the outline.
+function colourMap(rows) {
+  if (!mapBuilt || !browse) return;
+  const { personal, mine } = browse.opts;
+  const byCode = new Map(browseRows.map((r) => [r.code, r]));
+  const shown = mapShownCodes(rows);
+  const pickedCode = mapPicked && mapPicked.id === browse.id ? mapPicked.code : null;
+  const outlined = [];
+  const picked = [];
+  for (const { el, code, base } of mapShapes) {
+    const cls = mapClass(base, byCode.get(code), shown.has(code), personal, mine, code === pickedCode);
+    el.setAttribute('class', cls);
+    if (code === pickedCode) picked.push(el);
+    else if (cls.includes('map-todo')) outlined.push(el);
+  }
+  for (const el of [...outlined, ...picked]) el.parentNode.append(el);
+  mapSvg.setAttribute('aria-label', passport ? `World map of ${passport.passport.name}` : 'World map');
+}
+
+// ---- World map: zoom and pan (by the viewBox) ----
+
+const mapScale = () => mapData.width / mapView.w;
+const clampScale = (s) => Math.min(MAP_MAX_SCALE, Math.max(1, s));
+
+function mapRect() {
+  const rect = mapSvg.getBoundingClientRect();
+  return rect.width >= 1 && rect.height >= 1 ? rect : null;
+}
+
+// Keeps dots about MAP_DOT_PX screen pixels in radius at any zoom.
+function updateDotRadius(rect = mapRect()) {
+  if (!rect || !mapView) return;
+  const r = (MAP_DOT_PX * mapView.w) / rect.width;
+  if (!Number.isFinite(r) || r <= 0) return;
+  for (const { el } of mapDots) el.setAttribute('r', String(r));
+}
+
+// Clamped so the map always fills the frame. Dot radii change only with the zoom.
+function setMapView(x, y, w, h, rect) {
+  if (!mapData) return;
+  const nx = Math.min(Math.max(x, 0), mapData.width - w);
+  const ny = Math.min(Math.max(y, 0), mapData.height - h);
+  if (![nx, ny, w, h].every(Number.isFinite) || w <= 0 || h <= 0) return;
+  const zoomed = !mapView || mapView.w !== w;
+  mapView = { x: nx, y: ny, w, h };
+  mapSvg.setAttribute('viewBox', `${nx} ${ny} ${w} ${h}`);
+  if (zoomed) updateDotRadius(rect);
+}
+
+function resetMapView() {
+  if (mapBuilt) setMapView(0, 0, mapData.width, mapData.height);
+}
+
+// Zooms so that the map point (px, py) sits at the fraction (fx, fy) of the frame.
+function zoomMapTo(scale, px, py, fx, fy, rect) {
+  if (!mapView || ![scale, px, py, fx, fy].every(Number.isFinite)) return;
+  const s = clampScale(scale);
+  const w = mapData.width / s;
+  const h = mapData.height / s;
+  setMapView(px - fx * w, py - fy * h, w, h, rect);
+}
+
+// A screen point in map units, plus its fraction across the frame (null if the map isn't shown).
+function mapPoint(clientX, clientY, rect = mapRect()) {
+  if (!rect || !mapView) return null;
+  const fx = (clientX - rect.left) / rect.width;
+  const fy = (clientY - rect.top) / rect.height;
+  return { x: mapView.x + fx * mapView.w, y: mapView.y + fy * mapView.h, fx, fy };
+}
+
+function zoomMapBy(factor) {
+  if (!mapView) return;
+  zoomMapTo(mapScale() * factor, mapView.x + mapView.w / 2, mapView.y + mapView.h / 2, 0.5, 0.5);
+}
+
+$('map-zoom-in').addEventListener('click', () => {
+  cancelMapAnim();
+  zoomMapBy(MAP_STEP);
+});
+$('map-zoom-out').addEventListener('click', () => {
+  cancelMapAnim();
+  zoomMapBy(1 / MAP_STEP);
+});
+$('map-reset').addEventListener('click', () => {
+  cancelMapAnim();
+  closeMapCard();
+  clearMapPick();
+  resetMapView();
+});
+
+// The page scrolls instead when the zoom can't change (out at 1x, in at 12x).
+mapSvg.addEventListener('wheel', (event) => {
+  if (!mapBuilt || !mapView) return;
+  const unit = event.deltaMode === 1 ? 16 : (event.deltaMode === 2 ? 400 : 1);
+  const delta = Math.max(-300, Math.min(300, event.deltaY * unit));
+  const scale = clampScale(mapScale() * Math.exp(-delta * 0.002));
+  if (!Number.isFinite(scale) || Math.abs(scale - mapScale()) < 1e-9) return;
+  const p = mapPoint(event.clientX, event.clientY);
+  if (!p) return;
+  event.preventDefault();
+  cancelMapAnim();
+  zoomMapTo(scale, p.x, p.y, p.fx, p.fy);
+}, { passive: false });
+
+function panMap(dx, dy, rect) {
+  if (!mapView) return;
+  const ux = (dx * mapView.w) / rect.width;
+  const uy = (dy * mapView.h) / rect.height;
+  setMapView(mapView.x - ux, mapView.y - uy, mapView.w, mapView.h, rect);
+}
+
+// Two pointers: the map point under their midpoint follows the midpoint.
+function startPinch() {
+  const [a, b] = [...mapPointers.values()];
+  const d = Math.hypot(a.x - b.x, a.y - b.y);
+  const p = mapGesture.rect && mapPoint((a.x + b.x) / 2, (a.y + b.y) / 2, mapGesture.rect);
+  mapGesture.pinch = d >= 1 && p ? { d, scale: mapScale(), x: p.x, y: p.y } : null;
+}
+
+function movePinch(rect) {
+  const pinch = mapGesture.pinch;
+  if (!pinch) return;
+  const [a, b] = [...mapPointers.values()];
+  const d = Math.hypot(a.x - b.x, a.y - b.y);
+  if (d < 1) return;
+  const fx = ((a.x + b.x) / 2 - rect.left) / rect.width;
+  const fy = ((a.y + b.y) / 2 - rect.top) / rect.height;
+  zoomMapTo((pinch.scale * d) / pinch.d, pinch.x, pinch.y, fx, fy, rect);
+}
+
+function clearMapGesture() {
+  cancelAnimationFrame(mapMoveFrame);
+  mapMoveFrame = 0;
+  mapPointers.clear();
+  mapGesture = null;
+}
+
+// Applies the pointers' latest positions, at most once per frame. `last` is
+// where the single-pointer pan has got to.
+function applyMapMove() {
+  mapMoveFrame = 0;
+  const g = mapGesture;
+  if (!g || !g.rect || mapPointers.size === 0) return;
+  if (mapPointers.size >= 2) {
+    movePinch(g.rect);
+    return;
+  }
+  if (g.tap || !g.last) return;
+  const [cur] = mapPointers.values();
+  panMap(cur.x - g.last.x, cur.y - g.last.y, g.rect);
+  g.last = { x: cur.x, y: cur.y };
+}
+
+mapSvg.addEventListener('pointerdown', (event) => {
+  if (!mapBuilt || (event.pointerType === 'mouse' && event.button !== 0)) return;
+  cancelMapAnim();
+  // A new gesture: drop pointers whose up/cancel never arrived.
+  if (event.isPrimary || event.pointerType === 'mouse') clearMapGesture();
+  try {
+    mapSvg.setPointerCapture(event.pointerId);
+  } catch {
+    // Not capturable (pointer already gone): the gesture still works while over the map.
+  }
+  mapPointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+  if (!mapGesture) {
+    // The target is recorded now: with capture, later events target the svg.
+    // The frame's position is read once per gesture.
+    mapGesture = {
+      tap: mapPointers.size === 1, x: event.clientX, y: event.clientY, t: event.timeStamp,
+      target: event.target, pinch: null, last: null, rect: mapRect(),
+    };
+  }
+  if (mapPointers.size < 2) return;
+  mapGesture.tap = false;
+  closeMapCard();
+  startPinch();
+});
+
+mapSvg.addEventListener('pointermove', (event) => {
+  const g = mapGesture;
+  if (!mapPointers.has(event.pointerId) || !g) return;
+  const cur = { x: event.clientX, y: event.clientY };
+  mapPointers.set(event.pointerId, cur);
+  if (g.tap) {
+    if (Math.hypot(cur.x - g.x, cur.y - g.y) < MAP_TAP_PX) return;
+    // Drag start: pan from where the pointer went down.
+    g.tap = false;
+    g.last = { x: g.x, y: g.y };
+    closeMapCard();
+  }
+  if (!mapMoveFrame) mapMoveFrame = requestAnimationFrame(applyMapMove);
+});
+
+function endMapPointer(event) {
+  if (!mapPointers.has(event.pointerId)) return;
+  const g = mapGesture;
+  const last = mapPointers.size === 1;
+  mapPointers.delete(event.pointerId);
+  if (event.type === 'pointerup' && last && g && g.tap && event.timeStamp - g.t < MAP_TAP_MS
+    && Math.hypot(event.clientX - g.x, event.clientY - g.y) < MAP_TAP_PX) {
+    mapTap(g.target, event.clientX, event.clientY);
+  }
+  if (mapPointers.size === 0) {
+    clearMapGesture();
+  } else if (g && mapPointers.size >= 2) {
+    startPinch();
+  } else if (g) {
+    // Pinch to one finger: keep panning from where that finger is now.
+    const [rest] = mapPointers.values();
+    g.pinch = null;
+    g.last = { x: rest.x, y: rest.y };
+  }
+}
+
+mapSvg.addEventListener('pointerup', endMapPointer);
+mapSvg.addEventListener('pointercancel', endMapPointer);
+mapSvg.addEventListener('lostpointercapture', endMapPointer);
+
+window.addEventListener('resize', () => {
+  if (mapBuilt && browse && browse.view === 'map') updateDotRadius();
+});
+
+// The closest dot within reach of a screen point, or null.
+function nearestDot(clientX, clientY) {
+  const rect = mapRect();
+  if (!rect || !mapView) return null;
+  let best = null;
+  let bestDist = MAP_DOT_REACH_PX;
+  for (const dot of mapDots) {
+    const sx = rect.left + ((dot.x - mapView.x) / mapView.w) * rect.width;
+    const sy = rect.top + ((dot.y - mapView.y) / mapView.h) * rect.height;
+    const dist = Math.hypot(sx - clientX, sy - clientY);
+    if (dist <= bestDist) {
+      best = dot.el;
+      bestDist = dist;
+    }
+  }
+  return best;
+}
+
+// Only our own country shapes and dots count; anything else (sea, other land)
+// closes the card unless a dot is within reach. Where dots overlap, the one
+// whose centre is closest wins, not the one drawn last.
+function mapTap(target, clientX, clientY) {
+  let el = target instanceof Element ? target.closest('[data-code]') : null;
+  if (el && !(mapSvg.contains(el) && (el.classList.contains('map-country') || el.classList.contains('map-dot')))) {
+    el = null;
+  }
+  if (!el || el.classList.contains('map-dot')) el = nearestDot(clientX, clientY) || el;
+  const code = el ? el.getAttribute('data-code') : null;
+  if (typeof code === 'string' && CODE_RE.test(code) && countriesCache && countriesCache.has(code)) {
+    openMapCard(code, clientY);
+  } else {
+    closeMapCard();
+  }
+}
+
+// ---- World map: zoom to the random pick ----
+
+const PICK_ZOOM_MS = 600;
+const PICK_ZOOM_MIN = 2;
+const PICK_ZOOM_MAX = 8;
+// The country's box takes up at most 1 / 1.3 of the view in each direction.
+const PICK_ZOOM_PAD = 1.3;
+
+// The highlighted pick ({id, code}), and the running zoom animation's frame,
+// target view and map generation. The animation outlives the board (closing
+// it doesn't stop the zoom).
+let mapPicked = null;
+let mapAnimFrame = 0;
+let mapAnimTo = null;
+let mapAnimGen = 0;
+
+// User gestures, Reset and logout: stop where the map is now.
+function cancelMapAnim() {
+  cancelAnimationFrame(mapAnimFrame);
+  mapAnimFrame = 0;
+  mapAnimTo = null;
+}
+
+// Leaving the page (render): jump to the target, so coming back shows the
+// whole zoom rather than a half-way view.
+function finishMapAnim() {
+  const to = mapAnimTo;
+  const current = mapAnimGen === mapGen && mapBuilt;
+  cancelMapAnim();
+  if (to && current) setMapView(to.x, to.y, to.w, to.h);
+}
+
+// Removes the highlight (classes only; colourMap() leaves it off from now on).
+function clearMapPick() {
+  mapPicked = null;
+  for (const { el } of mapShapes) el.classList.remove('map-picked');
+}
+
+// The bounding box of the largest piece (by box area) of a validated path:
+// one piece per M. Null if no piece has a finite box.
+function largestPieceBox(d) {
+  let best = null;
+  for (const piece of d.split('M')) {
+    const nums = (piece.match(/-?[0-9.]+/g) || []).map(Number);
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (let i = 0; i + 1 < nums.length; i += 2) {
+      minX = Math.min(minX, nums[i]);
+      maxX = Math.max(maxX, nums[i]);
+      minY = Math.min(minY, nums[i + 1]);
+      maxY = Math.max(maxY, nums[i + 1]);
+    }
+    const box = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+    if (!Object.values(box).every(Number.isFinite)) continue;
+    if (!best || box.width * box.height > best.width * best.height) best = box;
+  }
+  return best;
+}
+
+// The view that fits a country: its dot if it has one, else its largest piece
+// (so mainland Portugal, not the Azores; metropolitan France, not French Guiana).
+function pickTargetView(code) {
+  const dot = mapDots.find((dt) => dt.code === code);
+  const d = mapData.countries.get(code);
+  let box = null;
+  if (dot) box = { x: dot.x, y: dot.y, width: 0, height: 0 };
+  else if (typeof d === 'string') box = largestPieceBox(d);
+  if (!box) return null;
+  const { width, height } = mapData;
+  const fit = Math.min(width / (box.width * PICK_ZOOM_PAD), height / (box.height * PICK_ZOOM_PAD));
+  const scale = Math.min(PICK_ZOOM_MAX, Math.max(PICK_ZOOM_MIN, Number.isFinite(fit) ? fit : PICK_ZOOM_MAX));
+  const w = width / scale;
+  const h = height / scale;
+  const view = { x: box.x + box.width / 2 - w / 2, y: box.y + box.height / 2 - h / 2, w, h };
+  return Object.values(view).every(Number.isFinite) ? view : null;
+}
+
+// Moves the view towards `to` over PICK_ZOOM_MS (ease-out). The scale is
+// interpolated on a log scale and the centre linearly, so the zoom feels even;
+// every step goes through setMapView's clamp, and the last step lands on `to`
+// exactly. Stops if the map or the page changed meanwhile.
+function animateMapTo(to) {
+  cancelMapAnim();
+  const { width, height } = mapData;
+  const from = { ...mapView };
+  const gen = mapGen;
+  const token = routeToken;
+  const start = performance.now();
+  const logFrom = Math.log(width / from.w);
+  const logTo = Math.log(width / to.w);
+  const lerp = (a, b, e) => a + (b - a) * e;
+  mapAnimTo = to;
+  mapAnimGen = gen;
+  const step = (now) => {
+    mapAnimFrame = 0;
+    if (gen !== mapGen || token !== routeToken || !mapBuilt) return;
+    const t = Math.min(1, (now - start) / PICK_ZOOM_MS);
+    if (t >= 1) {
+      mapAnimTo = null;
+      setMapView(to.x, to.y, to.w, to.h);
+      return;
+    }
+    const e = 1 - (1 - t) ** 3;
+    const scale = Math.exp(lerp(logFrom, logTo, e));
+    const w = width / scale;
+    const h = height / scale;
+    const cx = lerp(from.x + from.w / 2, to.x + to.w / 2, e);
+    const cy = lerp(from.y + from.h / 2, to.y + to.h / 2, e);
+    setMapView(cx - w / 2, cy - h / 2, w, h);
+    mapAnimFrame = requestAnimationFrame(step);
+  };
+  mapAnimFrame = requestAnimationFrame(step);
+}
+
+// Called when the pick board settles: in map view, highlight the country and
+// zoom to it (at once with reduced motion). List view is left alone. If the
+// map isn't built yet, the pick is recorded and shown once it is (ensureMap).
+function zoomMapToPick(code) {
+  if (!onBrowsePage() || browse.view !== 'map') return;
+  if (!CODE_RE.test(code) || !countriesCache || !countriesCache.has(code)) return;
+  clearMapPick();
+  mapPicked = { id: browse.id, code };
+  if (!mapBuilt || !mapView) return;
+  closeMapCard();
+  for (const { el, code: c } of mapShapes) {
+    if (c !== code) continue;
+    el.classList.add('map-picked');
+    el.parentNode.append(el);
+  }
+  const to = pickTargetView(code);
+  if (!to) return;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    cancelMapAnim();
+    setMapView(to.x, to.y, to.w, to.h);
+  } else {
+    animateMapTo(to);
+  }
+}
+
+// A pick recorded before the map was built (this passport only): zoom to it at once.
+function jumpToEarlyPick() {
+  if (!mapPicked || !browse || mapPicked.id !== browse.id) return;
+  const to = pickTargetView(mapPicked.code);
+  if (to) setMapView(to.x, to.y, to.w, to.h);
+}
+
+// ---- World map: the country card ----
+
+function mapCardStatus(row) {
+  if (!row || typeof row.s.status !== 'string' || !Object.hasOwn(MAP_CARD_LABELS, row.s.status)) return '';
+  if (browse.opts.personal) return personalDone(row.s) ? 'Done' : 'Not done';
+  return MAP_CARD_LABELS[row.s.status];
+}
+
+// Shown at the top of the frame for a tap in its lower half, else at the bottom.
+function openMapCard(code, clientY) {
+  if (!browse) return;
+  const country = countriesCache.get(code);
+  const row = browseRows.find((r) => r.code === code);
+  const rect = mapRect();
+  const top = rect ? clientY - rect.top > rect.height / 2 : false;
+  $('map-card-flag').textContent = flagFor(code);
+  $('map-card-name').textContent = country.name;
+  $('map-card-status').textContent = mapCardStatus(row);
+  const you = !browse.opts.personal && row && row.s.done_by_me === true;
+  $('map-card-you').textContent = you ? '✓ You' : '';
+  const card = $('map-card');
+  card.classList.toggle('map-card-top', top);
+  card.classList.toggle('map-card-bottom', !top);
+  card.hidden = false;
+  mapCardCode = code;
+}
+
+function closeMapCard() {
+  mapCardCode = null;
+  $('map-card').hidden = true;
+  for (const id of ['map-card-flag', 'map-card-name', 'map-card-status', 'map-card-you']) $(id).textContent = '';
+}
+
+$('map-card-open').addEventListener('click', () => {
+  if (mapCardCode !== null && onBrowsePage()) openCountry(mapCardCode);
+});
+
+// Logout: nothing of the previous colouring, card, zoom or gesture is left.
+// The built shapes themselves go in dropMap().
+function resetMapUi() {
+  mapGen += 1;
+  mapFetchKey = '';
+  mapPassportId = null;
+  mapShown = null;
+  mapPicked = null;
+  cancelMapAnim();
+  clearMapGesture();
+  closeMapCard();
+  for (const { el, base } of mapShapes) el.setAttribute('class', base);
+  mapSvg.setAttribute('aria-label', 'World map');
+  resetMapView();
+  showMapStatus('');
+  setViewUi(false);
+}
+
+// The parsed map and every shape go; the svg element itself stays, so its
+// listeners are attached only once.
+function dropMap() {
+  mapData = null;
+  mapBuilt = false;
+  mapShapes = [];
+  mapDots = [];
+  mapView = null;
+  mapSvg.replaceChildren();
+  mapSvg.removeAttribute('viewBox');
+  $('map-body').hidden = true;
+}
+
 // ---- Passport page: random pick (departure board) ----
 
 // Nothing here is saved: the board's country, the previous pick ({id, code},
@@ -1503,6 +2236,7 @@ function buildTiles(name) {
 
 function startPick(code) {
   stopPick();
+  clearMapPick();
   const country = countriesCache.get(code);
   pickCurrent = { id: browse.id, code };
   lastPick = { id: browse.id, code };
@@ -1568,6 +2302,7 @@ function settlePick() {
   $('pick-place').classList.remove('is-pending');
   $('pick-live').textContent = region ? `Next stop: ${country.name}, ${region}` : `Next stop: ${country.name}`;
   $('pick-board').disabled = true;
+  zoomMapToPick(pickCurrent.code);
   pickFrame = requestAnimationFrame(() => {
     if (gen !== pickGen || !pickDialog.open) return;
     // Defensive: the board only opens for owners and participants, so canLog

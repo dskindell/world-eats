@@ -101,7 +101,7 @@
             <p class="form-error browse-error" id="browse-error" role="alert" hidden></p>
           </div>
           <div class="browse-row">
-            <div class="field browse-sort">
+            <div class="field browse-sort" id="browse-sort-field">
               <label for="browse-sort">Sort</label>
               <select id="browse-sort">
                 <option value="name">Name (A-Z)</option>
@@ -117,6 +117,10 @@
               <button type="button" class="btn btn-primary" id="pick-open" aria-haspopup="dialog" hidden>Pick a country</button>
             </div>
           </div>
+          <div class="view-switch" id="view-switch" role="group" aria-label="Show countries as">
+            <button type="button" class="btn" data-view="list" id="view-list" aria-pressed="true">List</button>
+            <button type="button" class="btn" data-view="map" id="view-map" aria-pressed="false">Map</button>
+          </div>
         </div>
         <!-- "Nothing eligible" after Pick a country; empty (and not shown) otherwise. -->
         <p class="pick-empty" id="pick-empty" role="status"></p>
@@ -126,6 +130,35 @@
         </div>
         <p class="muted" id="browse-empty" hidden>No countries match.</p>
         <ul class="country-list" id="country-list" aria-labelledby="countries-title"></ul>
+        <!-- Map view. app.js fills the SVG once per page load (paths and dots only)
+             and colours it with classes; the card shows the tapped country. -->
+        <div class="map-section" id="map-section" hidden>
+          <p class="muted map-status" id="map-status" role="status"></p>
+          <button type="button" class="btn map-retry" id="map-retry" hidden>Try again</button>
+          <div id="map-body" hidden>
+            <div class="map-frame">
+              <svg class="map-svg" id="map-svg" role="img" aria-label="World map"></svg>
+              <div class="map-card" id="map-card" hidden>
+                <div class="map-card-text">
+                  <p class="map-card-name"><span class="flag" id="map-card-flag" aria-hidden="true"></span> <span id="map-card-name"></span></p>
+                  <p class="map-card-status"><span id="map-card-status"></span><span class="map-card-you" id="map-card-you"></span></p>
+                </div>
+                <button type="button" class="btn btn-primary" id="map-card-open">Open</button>
+              </div>
+            </div>
+            <div class="map-zoom">
+              <button type="button" class="btn" id="map-zoom-in" aria-label="Zoom in">+</button>
+              <button type="button" class="btn" id="map-zoom-out" aria-label="Zoom out">&minus;</button>
+              <button type="button" class="btn" id="map-reset" aria-label="Reset map">Reset</button>
+            </div>
+            <ul class="map-legend" id="map-legend">
+              <li><span class="legend-swatch status-none" aria-hidden="true"></span><span id="legend-none">Not started</span></li>
+              <li id="legend-some"><span class="legend-swatch status-some" aria-hidden="true"></span>Some</li>
+              <li><span class="legend-swatch status-complete" aria-hidden="true"></span><span id="legend-complete">Fully complete</span></li>
+              <li id="legend-todo"><span class="legend-swatch legend-swatch-todo" aria-hidden="true"></span>Outline = not done by you</li>
+            </ul>
+          </div>
+        </div>
       </section>
     </section>
 

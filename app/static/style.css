@@ -19,11 +19,19 @@
   --danger-border: #6e2c2c;
   --focus: #7cc4ff;
   --stars: #f5c451;
-  /* Country status colours, shared by the list badges and (later) the map.
+  /* Country status colours, shared by the list badges and the map.
      Always paired with a text label. */
   --status-none: #9aa4b1;
   --status-some: #e9c46a;
   --status-complete: #6fcf97;
+  /* World map: land outside the 197 (darker than any dimmed country, no
+     border), borders, and the "not done by you" outline. The sea is --bg;
+     country fills are the status colours above. */
+  --map-other: #1e2329;
+  --map-border: #121519;
+  --map-todo: #dfe4ea;
+  /* The random pick's highlight on the map. */
+  --map-picked: #ff4fa3;
   /* Random pick: the split-flap departure board. */
   --board-bg: #0a0c0f;
   --board-tile: #1d2128;
@@ -989,4 +997,222 @@ h1:focus {
 
 .pick-actions #pick-again {
   flex-basis: 100%;
+}
+
+/* ---- World map ---- */
+
+/* List / Map: a two-button segmented switch. */
+.view-switch {
+  display: flex;
+}
+
+.view-switch .btn {
+  flex: 1 1 0;
+}
+
+.view-switch .btn:first-child {
+  border-radius: var(--radius) 0 0 var(--radius);
+}
+
+.view-switch .btn:last-child {
+  margin-left: -1px;
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+.view-switch .btn[aria-pressed="false"] {
+  background: var(--surface);
+  color: var(--text-muted);
+}
+
+/* Above its neighbour, so the shared edge shows the accent border. */
+.view-switch .btn[aria-pressed="true"] {
+  position: relative;
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+.map-status {
+  margin: 0;
+}
+
+.map-retry {
+  margin-top: 0.5rem;
+}
+
+/* The map runs edge to edge inside the countries card, like the list. */
+.map-frame {
+  position: relative;
+  margin: 0 -1rem;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+/* The height follows the viewBox, which always keeps the map's proportions. */
+.map-svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-tap-highlight-color: transparent;
+  cursor: grab;
+}
+
+.map-svg path,
+.map-svg circle {
+  vector-effect: non-scaling-stroke;
+  fill-rule: evenodd;
+  stroke: var(--map-border);
+  stroke-width: 0.5px;
+  /* Looks the same at these widths; measured at about 30% less raster time
+     than miter joins on the many-cornered outlines (headless Chrome). */
+  stroke-linejoin: bevel;
+}
+
+.map-svg .map-other {
+  fill: var(--map-other);
+  stroke: none;
+}
+
+.map-country,
+.map-dot {
+  fill: var(--status-none);
+  cursor: pointer;
+}
+
+.map-svg .status-some {
+  fill: var(--status-some);
+}
+
+.map-svg .status-complete {
+  fill: var(--status-complete);
+}
+
+.map-svg .map-dot {
+  stroke-width: 1.5px;
+}
+
+.map-svg .map-todo {
+  stroke: var(--map-todo);
+  stroke-width: 1px;
+}
+
+/* After .map-todo so the pick's highlight wins. */
+.map-svg .map-picked {
+  stroke: var(--map-picked);
+  stroke-width: 2.5px;
+}
+
+/* Faded fill, full border: a country that doesn't match still reads as a country. */
+.map-svg .map-dim {
+  fill-opacity: 0.35;
+}
+
+/* The tapped country: pinned to the top or bottom edge of the frame (never
+   positioned from computed numbers). */
+.map-card {
+  position: absolute;
+  left: 0.5rem;
+  right: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0.5rem 0.5rem 0.75rem;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 24px var(--shadow);
+}
+
+.map-card-top {
+  top: 0.5rem;
+}
+
+.map-card-bottom {
+  bottom: 0.5rem;
+}
+
+.map-card-text {
+  flex: 1;
+  min-width: 0;
+}
+
+.map-card p {
+  margin: 0;
+}
+
+.map-card-name {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 700;
+}
+
+.map-card-status {
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.map-card-you:not(:empty) {
+  margin-left: 0.5rem;
+  color: var(--text);
+  font-weight: 600;
+}
+
+.map-card .btn {
+  flex-shrink: 0;
+}
+
+.map-zoom {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.map-zoom .btn {
+  min-width: var(--tap);
+  padding: 0 0.75rem;
+}
+
+.map-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: 0.5rem 0 0;
+  padding: 0;
+  list-style: none;
+  color: var(--text-muted);
+  font-size: 0.875rem;
+}
+
+.map-legend li {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.legend-swatch {
+  flex-shrink: 0;
+  width: 0.875rem;
+  height: 0.875rem;
+  border-radius: 3px;
+}
+
+.legend-swatch.status-none {
+  background: var(--status-none);
+}
+
+.legend-swatch.status-some {
+  background: var(--status-some);
+}
+
+.legend-swatch.status-complete {
+  background: var(--status-complete);
+}
+
+.legend-swatch-todo {
+  border: 2px solid var(--map-todo);
 }
