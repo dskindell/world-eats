@@ -205,6 +205,11 @@ function splitHash(hash) {
 function render() {
   routeToken += 1;
   clearTimeout(searchTimer);
+  // A Log-a-meal intent from the pick board is one-shot: taken by this render
+  // whatever the route, and passed on only to the matching country page.
+  const intent = mealIntent;
+  mealIntent = null;
+  stopPick();
   closeMenu();
   closeDialogs();
   if (state.setupRequired) return showView('setup');
@@ -219,7 +224,8 @@ function render() {
   }
   if (query !== null && !route.query) history.replaceState(null, '', path);
   const [, param, param2] = path.match(route.re);
-  return route.enter(param, routeToken, param2, query);
+  const forCountry = route.enter === enterCountry && intent && intent.id === param && intent.code === param2;
+  return route.enter(param, routeToken, param2, query, forCountry ? intent : null);
 }
 
 function showLoading() {
@@ -615,6 +621,9 @@ function passportPath(id, suffix = '') {
 }
 
 function clearPassportUi() {
+  stopPick();
+  lastPick = null;
+  mealIntent = null;
   passport = null;
   pickUsers = [];
   countryDetail = null;
@@ -858,6 +867,7 @@ async function enterPassport(id, token, _code, query) {
   browse = parseBrowse(query, id, browseOptions(passport.passport));
   showCountryList(summary, countries);
   showView('passport');
+  updatePickButton();
   const hash = browseHash(browse);
   if (location.hash !== hash) history.replaceState(null, '', hash);
   if (browse.q.trim()) startSearch();
@@ -869,8 +879,9 @@ async function enterPeople(id, token) {
 }
 
 // The code is checked against CODE_RE and the country list before it's used
-// in an API path; an unknown one goes back to the passport.
-async function enterCountry(id, token, code) {
+// in an API path; an unknown one goes back to the passport. `intent` is a
+// Log-a-meal request from the pick board (see render()).
+async function enterCountry(id, token, code, _query, intent) {
   if (!ID_RE.test(id)) {
     replaceRoute('#/passports');
     return;
@@ -895,7 +906,13 @@ async function enterCountry(id, token, code) {
   // Back returns to the list as it was searched and filtered (rebuilt from validated state).
   $('country-back').setAttribute('href', browse && browse.id === id ? browseHash(browse) : `#/passports/${id}`);
   showView('country');
+  if (intent && intentStillValid(intent, token)) openMealDialog(null);
 }
+
+// Re-checked against what has just loaded: the role may have changed since the pick.
+const intentStillValid = (intent, token) => token === routeToken && passport !== null
+  && String(passport.passport.id) === intent.id && countryDetail !== null
+  && countryDetail.code === intent.code && canLogMeals();
 
 // ---- Passport page: progress and country list ----
 
@@ -1127,18 +1144,28 @@ function countryListHtml(rows, b) {
   return html;
 }
 
-function applyBrowse() {
-  if (!browse) return;
+// The rows the list shows, in its order (also the random pick's starting point).
+function visibleRows() {
+  if (!browse) return [];
   const b = browse;
   const compare = sortCompare(b.sort);
   // Ties fall back to name A-Z.
-  const rows = browseRows.filter((r) => rowShown(r, b)).sort((x, y) => compare(x, y) || byName(x, y));
+  return browseRows.filter((r) => rowShown(r, b)).sort((x, y) => compare(x, y) || byName(x, y));
+}
+
+function applyBrowse() {
+  if (!browse) return;
+  const b = browse;
+  const rows = visibleRows();
   $('country-list').innerHTML = countryListHtml(rows, b);
   const n = filterCount(b);
   $('filters-open').textContent = n ? `Filters (${n})` : 'Filters';
   $('browse-count-row').hidden = !(b.q.trim() || n);
   $('browse-count').textContent = search.pending ? 'Searching…' : `Showing ${rows.length} of ${browseRows.length}`;
   $('browse-empty').hidden = search.pending || rows.length > 0;
+  // A "nothing eligible" message described the list before this change.
+  setPickEmpty('');
+  updatePickButton();
 }
 
 // Sets the bar's controls and labels from the state (personal passports say "Done").
@@ -1148,6 +1175,7 @@ function showBrowseControls() {
   $('browse-sort').value = browse.sort;
   $('sort-completed-desc').textContent = personal ? 'Done (newest)' : 'Completed (newest)';
   $('sort-completed-asc').textContent = personal ? 'Done (oldest)' : 'Completed (oldest)';
+  $('pick-open').hidden = !canLogMeals();
   showSearchError('');
 }
 
@@ -1175,6 +1203,8 @@ function clearBrowse() {
   $('browse-count-row').hidden = true;
   $('browse-empty').hidden = true;
   $('filters-regions').replaceChildren();
+  $('pick-open').hidden = true;
+  setPickEmpty('');
   showSearchError('');
 }
 
@@ -1250,6 +1280,8 @@ $('browse-q').addEventListener('input', () => {
     startSearch();
     writeBrowseAddress();
   }, 300);
+  // The list doesn't yet match the box, so no picking until the search has run.
+  updatePickButton();
 });
 
 $('browse-sort').addEventListener('change', () => {
@@ -1339,6 +1371,284 @@ $('filters-clear').addEventListener('click', () => {
 $('filters-form').addEventListener('submit', (event) => {
   event.preventDefault();
   filtersDialog.close();
+});
+
+// ---- Passport page: random pick (departure board) ----
+
+// Nothing here is saved: the board's country, the previous pick ({id, code},
+// so Pick again doesn't repeat it) and a Log-a-meal intent ({id, code}, taken
+// by the next render()) live in memory only and are dropped by clearPassportUi().
+const pickDialog = $('pick-dialog');
+let pickCurrent = null;
+let lastPick = null;
+let mealIntent = null;
+// Bumped by stopPick() and on settling; timer and frame callbacks that
+// captured an older value do nothing.
+let pickGen = 0;
+let pickTimer = 0;
+let pickFrame = 0;
+let pickTiles = [];
+let pickStart = 0;
+
+const FLAP_CHARS = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+const PICK_TICK_MS = 60;
+// Tile i stops at PICK_FIRST_MS + i * PICK_SPREAD_MS / (length - 1): the first
+// at 400 ms, the last at 2500 ms (spaces count as positions).
+const PICK_FIRST_MS = 400;
+const PICK_SPREAD_MS = 2100;
+
+const pickButtons = () => [$('pick-log'), $('pick-country'), $('pick-again')];
+
+function pickBlocked() {
+  return !onBrowsePage() || !canLogMeals() || searchTimer !== 0 || search.pending
+    || !countriesCache || browseRows.length === 0;
+}
+
+function updatePickButton() {
+  $('pick-open').disabled = pickBlocked();
+}
+
+// Countries listed right now that the caller hasn't done. Strict checks: an
+// unexpected value is never eligible.
+function pickEligible() {
+  if (!browse || !countriesCache) return [];
+  const personal = browse.opts.personal;
+  return visibleRows()
+    .filter((r) => (personal ? r.s.status === 'not_started' : r.s.done_by_me === false))
+    .map((r) => r.code)
+    .filter((code) => CODE_RE.test(code) && countriesCache.has(code));
+}
+
+// Uniform in [0, n): values in the incomplete last block are rejected.
+function randomIndex(n) {
+  const limit = 2 ** 32 - (2 ** 32 % n);
+  const buf = new Uint32Array(1);
+  do {
+    crypto.getRandomValues(buf);
+  } while (buf[0] >= limit);
+  return buf[0] % n;
+}
+
+// The previous pick is left out first (unless it's the only one), so a
+// repeat is impossible without re-drawing.
+function drawPick(codes, previous) {
+  const pool = codes.length > 1 && codes.includes(previous) ? codes.filter((c) => c !== previous) : codes;
+  return pool[randomIndex(pool.length)];
+}
+
+function previousPick() {
+  return lastPick && browse && lastPick.id === browse.id ? lastPick.code : null;
+}
+
+// The status line is cleared first and filled a frame later, so a screen
+// reader announces it even when the same message is shown again.
+let pickEmptyGen = 0;
+
+function setPickEmpty(message) {
+  pickEmptyGen += 1;
+  $('pick-empty').textContent = '';
+  if (!message) return;
+  const gen = pickEmptyGen;
+  const token = routeToken;
+  requestAnimationFrame(() => {
+    if (gen === pickEmptyGen && token === routeToken && onBrowsePage()) $('pick-empty').textContent = message;
+  });
+}
+
+function showPickEmpty() {
+  const active = search.on || filterCount(browse) > 0;
+  setPickEmpty(active
+    ? "You've done every country that matches. Clear filters to pick from all."
+    : "You've done them all!");
+}
+
+// Synchronous: stops the timer and frame, and empties the board.
+function stopPick() {
+  clearInterval(pickTimer);
+  cancelAnimationFrame(pickFrame);
+  pickTimer = 0;
+  pickFrame = 0;
+  pickGen += 1;
+  pickCurrent = null;
+  pickTiles = [];
+  $('pick-tiles').replaceChildren();
+  $('pick-flag').textContent = '';
+  $('pick-region').textContent = '';
+  $('pick-live').textContent = '';
+  $('pick-place').classList.add('is-pending');
+  $('pick-board').disabled = false;
+  for (const button of pickButtons()) button.disabled = true;
+}
+
+// One tile per code point; each word is kept together (a word wider than the
+// board wraps inside itself). A space is a blank tile ending its word, so a
+// line never starts with a gap.
+function buildTiles(name) {
+  const chars = Array.from(name.normalize('NFC').toLocaleUpperCase('en'));
+  const box = $('pick-tiles');
+  const step = chars.length > 1 ? PICK_SPREAD_MS / (chars.length - 1) : 0;
+  let word = null;
+  pickTiles = chars.map((ch, i) => {
+    if (!word) {
+      word = document.createElement('span');
+      word.className = 'pick-word';
+      box.append(word);
+    }
+    const el = textEl('span', ch === ' ' ? '' : ch, ch === ' ' ? 'pick-tile pick-tile-space' : 'pick-tile');
+    word.append(el);
+    if (ch === ' ') word = null;
+    return { el, ch, stopAt: PICK_FIRST_MS + i * step, done: ch === ' ' };
+  });
+}
+
+function startPick(code) {
+  stopPick();
+  const country = countriesCache.get(code);
+  pickCurrent = { id: browse.id, code };
+  lastPick = { id: browse.id, code };
+  buildTiles(country.name);
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    settlePick();
+    return;
+  }
+  const gen = pickGen;
+  pickStart = performance.now();
+  pickTimer = setInterval(() => tickPick(gen), PICK_TICK_MS);
+  tickPick(gen);
+}
+
+// Time-based, so a throttled background tab still settles on time.
+function tickPick(gen) {
+  if (gen !== pickGen) return;
+  if (!pickDialog.open) {
+    stopPick();
+    return;
+  }
+  const elapsed = performance.now() - pickStart;
+  const random = new Uint8Array(pickTiles.length);
+  crypto.getRandomValues(random);
+  let left = 0;
+  pickTiles.forEach((t, i) => {
+    if (t.done) return;
+    if (elapsed >= t.stopAt) {
+      t.done = true;
+      t.el.textContent = t.ch;
+      t.el.className = 'pick-tile';
+      return;
+    }
+    left += 1;
+    t.el.textContent = FLAP_CHARS[random[i] % FLAP_CHARS.length];
+    // Two identical animations under different names restart it on every flap.
+    t.el.className = t.el.className === 'pick-tile flip-a' ? 'pick-tile flip-b' : 'pick-tile flip-a';
+  });
+  if (left === 0) settlePick();
+}
+
+// Shows the result. The buttons wait a frame, so the key press or tap that
+// skipped the animation can't also activate one of them.
+function settlePick() {
+  if (!pickCurrent) return;
+  clearInterval(pickTimer);
+  cancelAnimationFrame(pickFrame);
+  pickTimer = 0;
+  pickGen += 1;
+  const gen = pickGen;
+  const country = countriesCache && countriesCache.get(pickCurrent.code);
+  if (!country) {
+    stopPick();
+    return;
+  }
+  for (const t of pickTiles) {
+    t.el.textContent = t.ch === ' ' ? '' : t.ch;
+    t.el.className = t.ch === ' ' ? 'pick-tile pick-tile-space' : 'pick-tile';
+  }
+  const region = typeof country.region === 'string' ? country.region : '';
+  $('pick-flag').textContent = flagFor(pickCurrent.code);
+  $('pick-region').textContent = region;
+  $('pick-place').classList.remove('is-pending');
+  $('pick-live').textContent = region ? `Next stop: ${country.name}, ${region}` : `Next stop: ${country.name}`;
+  $('pick-board').disabled = true;
+  pickFrame = requestAnimationFrame(() => {
+    if (gen !== pickGen || !pickDialog.open) return;
+    // Defensive: the board only opens for owners and participants, so canLog
+    // is normally true here.
+    const canLog = canLogMeals();
+    $('pick-log').hidden = !canLog;
+    for (const button of pickButtons()) button.disabled = false;
+    (canLog ? $('pick-log') : $('pick-country')).focus();
+  });
+}
+
+$('pick-open').addEventListener('click', () => {
+  if (pickBlocked()) return;
+  const codes = pickEligible();
+  if (!codes.length) {
+    showPickEmpty();
+    return;
+  }
+  setPickEmpty('');
+  pickDialog.showModal();
+  startPick(drawPick(codes, previousPick()));
+});
+
+$('pick-board').addEventListener('click', () => {
+  if (pickTimer) settlePick();
+});
+
+function closePick() {
+  stopPick();
+  pickDialog.close();
+}
+
+$('pick-close').addEventListener('click', closePick);
+// Escape: stop now; the dialog then closes by default.
+pickDialog.addEventListener('cancel', stopPick);
+// May run after a result button has already navigated, so it only stops the
+// board and never touches the Log-a-meal intent.
+pickDialog.addEventListener('close', stopPick);
+
+// A held key repeats; a repeat must not activate whatever button now has focus.
+pickDialog.addEventListener('keydown', (event) => {
+  if (event.repeat && (event.key === 'Enter' || event.key === ' ')) event.preventDefault();
+}, true);
+
+// The settled pick as a country hash, from checked values only (else null).
+// The passport entry in history keeps its browse query, so Back returns to it.
+function pickedCountryHash() {
+  const p = pickCurrent;
+  if (!p || !ID_RE.test(p.id) || !CODE_RE.test(p.code) || !countriesCache || !countriesCache.has(p.code)) return null;
+  return { id: p.id, code: p.code, hash: `#/passports/${p.id}/countries/${p.code}` };
+}
+
+$('pick-log').addEventListener('click', () => {
+  const target = pickedCountryHash();
+  if (!target || !canLogMeals() || !onBrowsePage()) return;
+  closePick();
+  mealIntent = { id: target.id, code: target.code };
+  navigate(target.hash);
+});
+
+$('pick-country').addEventListener('click', () => {
+  const target = pickedCountryHash();
+  if (!target || !onBrowsePage()) return;
+  closePick();
+  navigate(target.hash);
+});
+
+$('pick-again').addEventListener('click', () => {
+  if (!pickCurrent) return;
+  if (pickBlocked()) {
+    closePick();
+    return;
+  }
+  const codes = pickEligible();
+  if (!codes.length) {
+    closePick();
+    showPickEmpty();
+    return;
+  }
+  startPick(drawPick(codes, previousPick()));
+  $('pick-board').focus();
 });
 
 $('people-open').addEventListener('click', () => {

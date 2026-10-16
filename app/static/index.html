@@ -112,9 +112,14 @@
                 <option value="progress">Progress</option>
               </select>
             </div>
-            <button type="button" class="btn" id="filters-open" aria-haspopup="dialog">Filters</button>
+            <div class="browse-actions">
+              <button type="button" class="btn" id="filters-open" aria-haspopup="dialog">Filters</button>
+              <button type="button" class="btn btn-primary" id="pick-open" aria-haspopup="dialog" hidden>Pick a country</button>
+            </div>
           </div>
         </div>
+        <!-- "Nothing eligible" after Pick a country; empty (and not shown) otherwise. -->
+        <p class="pick-empty" id="pick-empty" role="status"></p>
         <div class="browse-count" id="browse-count-row" hidden>
           <p id="browse-count" role="status" aria-live="polite"></p>
           <button type="button" class="btn" id="browse-clear">Clear</button>
@@ -603,6 +608,27 @@
         <button type="submit" class="btn btn-primary">Done</button>
       </div>
     </form>
+  </dialog>
+
+  <!-- Random pick: a split-flap board. app.js builds the tiles and enables the
+       result buttons once the name has settled. Not a form (nothing to submit). -->
+  <dialog class="dialog pick-dialog" id="pick-dialog" aria-label="Random pick">
+    <div class="stack">
+      <div class="pick-head">
+        <p class="pick-lead">Next stop:</p>
+        <button type="button" class="btn" id="pick-close">Close</button>
+      </div>
+      <button type="button" class="pick-board" id="pick-board" aria-label="Skip animation" autofocus>
+        <span class="pick-tiles" id="pick-tiles" aria-hidden="true"></span>
+      </button>
+      <p class="pick-place" id="pick-place"><span class="flag" id="pick-flag" aria-hidden="true"></span><span id="pick-region"></span></p>
+      <p class="visually-hidden" id="pick-live" aria-live="polite"></p>
+      <div class="actions pick-actions" id="pick-actions">
+        <button type="button" class="btn btn-primary" id="pick-log" disabled>Log a meal</button>
+        <button type="button" class="btn" id="pick-country" disabled>Open country</button>
+        <button type="button" class="btn" id="pick-again" disabled>Pick again</button>
+      </div>
+    </div>
   </dialog>
 
   <div class="toast" id="toast" role="status" aria-live="polite"></div>

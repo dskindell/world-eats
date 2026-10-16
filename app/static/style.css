@@ -24,6 +24,10 @@
   --status-none: #9aa4b1;
   --status-some: #e9c46a;
   --status-complete: #6fcf97;
+  /* Random pick: the split-flap departure board. */
+  --board-bg: #0a0c0f;
+  --board-tile: #1d2128;
+  --board-text: #f7e48c;
   --backdrop: rgb(0 0 0 / 0.6);
   --shadow: rgb(0 0 0 / 0.45);
 
@@ -770,15 +774,17 @@ h1:focus {
   margin: 0.25rem 0 0;
 }
 
+/* Sort takes the first line on a phone; Filters and Pick share the next. */
 .browse-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.5rem;
 }
 
 .browse-sort {
   display: flex;
-  flex: 1;
+  flex: 1 1 12rem;
   align-items: center;
   gap: 0.5rem;
   min-width: 0;
@@ -792,10 +798,6 @@ h1:focus {
 .field.browse-sort select {
   flex: 1;
   min-width: 0;
-}
-
-#filters-open {
-  flex-shrink: 0;
 }
 
 .browse-count {
@@ -846,4 +848,145 @@ h1:focus {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   column-gap: 0.75rem;
+}
+
+/* ---- Random pick: split-flap departure board ---- */
+
+.browse-actions {
+  display: flex;
+  flex: 1 1 auto;
+  gap: 0.5rem;
+}
+
+.browse-actions .btn {
+  flex: 1 0 auto;
+}
+
+/* Always rendered (a live region must exist before its text arrives); no
+   space taken while empty. */
+.pick-empty {
+  margin: 0 0 0.75rem;
+  font-weight: 600;
+}
+
+.pick-empty:empty {
+  margin: 0;
+}
+
+.pick-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.pick-lead {
+  margin: 0;
+  color: var(--board-text);
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.pick-board {
+  display: block;
+  width: 100%;
+  min-height: var(--tap);
+  padding: 0.75rem 0.5rem;
+  background: var(--board-bg);
+  color: var(--board-text);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font: inherit;
+  cursor: pointer;
+}
+
+.pick-board:disabled {
+  cursor: default;
+}
+
+.pick-tiles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem 3px;
+}
+
+/* Words never break between tiles unless one is wider than the board. */
+.pick-word {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  max-width: 100%;
+}
+
+.pick-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* 13 tiles (Liechtenstein, Guinea-Bissau) fit one row on a 390 px screen. */
+  width: 1.1875rem;
+  height: 1.875rem;
+  /* The hinge across the middle of the flap, drawn behind the letter. */
+  background: linear-gradient(var(--board-tile) calc(50% - 1px), var(--board-bg) calc(50% - 1px),
+    var(--board-bg) calc(50% + 1px), var(--board-tile) calc(50% + 1px));
+  color: var(--board-text);
+  border-radius: 3px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, "DejaVu Sans Mono", "Liberation Mono", monospace;
+  font-size: 1.125rem;
+  font-weight: 700;
+  line-height: 1;
+  overflow-wrap: normal;
+}
+
+.pick-tile.flip-a {
+  animation: pick-flip-a 90ms ease-out;
+}
+
+.pick-tile.flip-b {
+  animation: pick-flip-b 90ms ease-out;
+}
+
+.pick-tile.pick-tile-space {
+  background: transparent;
+}
+
+@keyframes pick-flip-a {
+  from { transform: scaleY(0.2); }
+  to { transform: scaleY(1); }
+}
+
+@keyframes pick-flip-b {
+  from { transform: scaleY(0.2); }
+  to { transform: scaleY(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pick-tile.flip-a,
+  .pick-tile.flip-b {
+    animation: none;
+  }
+}
+
+/* Room is kept for the flag and region so the buttons don't jump on settling. */
+.pick-place {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-height: 1.75rem;
+  margin: 0;
+  font-weight: 600;
+}
+
+.pick-place.is-pending {
+  visibility: hidden;
+}
+
+/* Log a meal and Open country share a row; Pick again gets its own. */
+.pick-actions .btn {
+  flex: 1 1 0;
+}
+
+.pick-actions #pick-again {
+  flex-basis: 100%;
 }
