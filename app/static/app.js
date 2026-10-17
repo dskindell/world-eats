@@ -930,14 +930,39 @@ const intentStillValid = (intent, token) => token === routeToken && passport !==
 
 // ---- Passport page: progress and country list ----
 
-// Fixed labels and classes; `status` itself never reaches the HTML.
-const STATUS_BADGES = {
-  not_started: ['Not started', 'badge-status-none'],
-  some: ['Some', 'badge-status-some'],
-  complete: ['Fully complete', 'badge-status-complete'],
+// How a country's status shows, per display state: [list badge, badge class,
+// map class, map card text]. Fixed literals only; the server's `status` is
+// looked up, never copied. An empty badge means no badge.
+const DISPLAY_STATES = Object.freeze({
+  not_started: Object.freeze(['Not started', 'badge-status-none', 'status-none', 'Not started']),
+  your_turn: Object.freeze(['Your turn', 'badge-status-your-turn', 'status-your-turn', 'Your turn']),
+  waiting: Object.freeze(['Waiting on others', 'badge-status-waiting', 'status-waiting', 'Waiting on others']),
+  some: Object.freeze(['Some', 'badge-status-some', 'status-some', 'Some participants']),
+  complete: Object.freeze(['Fully complete', 'badge-status-complete', 'status-complete', 'Fully complete']),
+  // Personal passports: done or not.
+  done: Object.freeze(['✓ Done', 'badge-status-complete', 'status-complete', 'Done']),
+  not_done: Object.freeze(['', '', 'status-none', 'Not done']),
+});
+const SERVER_STATUSES = Object.freeze({ not_started: true, some: true, complete: true });
+
+// The display state of a summary row (or null): participants of shared
+// passports (opts.mine) split "some" by their own done_by_me into Your turn /
+// Waiting on others; viewers see the three server states; personal passports
+// done / not done.
+function displayState(s, opts) {
+  const status = s && typeof s.status === 'string' && Object.hasOwn(SERVER_STATUSES, s.status) ? s.status : null;
+  if (!status) return null;
+  if (opts.personal) return status === 'not_started' ? 'not_done' : 'done';
+  if (!opts.mine || status !== 'some') return status;
+  if (s.done_by_me === false) return 'your_turn';
+  if (s.done_by_me === true) return 'waiting';
+  return null;
+}
+
+const displayEntry = (s, opts) => {
+  const key = displayState(s, opts);
+  return key ? DISPLAY_STATES[key] : null;
 };
-const statusBadge = (status) => (typeof status === 'string' && Object.hasOwn(STATUS_BADGES, status)
-  ? STATUS_BADGES[status] : null);
 const count = (n) => (Number.isInteger(n) && n >= 0 ? n : 0);
 // A personal passport has one participant, so any meal means it's done.
 const personalDone = (s) => s.status === 'some' || s.status === 'complete';
@@ -950,15 +975,10 @@ function progressText(progress, rows, personal) {
   return `Fully complete: ${count(progress.complete)} / ${total}${mine}`;
 }
 
-function countryRowHtml(s, country, personal, hint) {
+function countryRowHtml(s, country, opts, hint) {
   const badges = [];
-  if (personal) {
-    if (personalDone(s)) badges.push(['✓ Done', 'badge-status-complete']);
-  } else {
-    const status = statusBadge(s.status);
-    if (status) badges.push(status);
-    if (s.done_by_me === true) badges.push(['✓ You', '']);
-  }
+  const entry = displayEntry(s, opts);
+  if (entry && entry[0]) badges.push([entry[0], entry[1]]);
   return `<li><button type="button" class="country-row" data-code="${esc(country.code)}">`
     + `<span class="flag" aria-hidden="true">${esc(flagFor(country.code))}</span>`
     + `<span class="country-row-name">${esc(country.name)}</span>`
@@ -1006,7 +1026,9 @@ function openCountry(code) {
 // ---- Passport page: search, sort and filters (kept in the address) ----
 
 const SORTS = ['name', 'region', 'completed_desc', 'completed_asc', 'rating', 'progress'];
-const STATUS_KEYS = ['not_started', 'some', 'complete'];
+// Status filter values: participants of shared passports, viewers, personal.
+const PARTICIPANT_STATUS_KEYS = ['not_started', 'your_turn', 'waiting', 'complete'];
+const VIEWER_STATUS_KEYS = ['not_started', 'some', 'complete'];
 const PERSONAL_STATUS_KEYS = ['not_started', 'complete'];
 const MINE_KEYS = ['done', 'not_done'];
 const STARS_RE = /^[1-5]$/;
@@ -1025,11 +1047,21 @@ let searchTimer = 0;
 // statuses, and only participants of shared passports have "mine".
 function browseOptions(p) {
   const personal = p.is_personal === true;
+  const mine = !personal && (p.role === 'owner' || p.role === 'participant');
   return {
     personal,
-    statuses: personal ? PERSONAL_STATUS_KEYS : STATUS_KEYS,
-    mine: !personal && (p.role === 'owner' || p.role === 'participant'),
+    statuses: personal ? PERSONAL_STATUS_KEYS : (mine ? PARTICIPANT_STATUS_KEYS : VIEWER_STATUS_KEYS),
+    mine,
   };
+}
+
+// The status filter from the address: for participants an old "some" means
+// Your turn and Waiting on others; anything not valid for the role is dropped.
+function statusList(raw, opts) {
+  if (raw === null) return [];
+  let parts = raw.split(',');
+  if (opts.mine) parts = parts.flatMap((v) => (v === 'some' ? ['your_turn', 'waiting'] : [v]));
+  return opts.statuses.filter((v) => parts.includes(v));
 }
 
 // The allowed values present in a comma-separated list, in the allowed order.
@@ -1054,7 +1086,7 @@ function parseBrowse(query, id, opts) {
     opts,
     q: q !== null && codePoints(q) <= MAX_QUERY ? q : '',
     sort: SORTS.includes(sort) ? sort : 'name',
-    status: pickList(one('status'), opts.statuses),
+    status: statusList(one('status'), opts),
     mine: opts.mine && MINE_KEYS.includes(mine) ? mine : '',
     region: pickList(one('region'), regionList()),
     stars: stars !== null && STARS_RE.test(stars) ? Number(stars) : 0,
@@ -1108,15 +1140,20 @@ function rowModel(s, country, personal, active) {
   };
 }
 
-// On a personal passport "Done" is any status other than not started.
-function statusMatches(r, status, personal) {
-  if (personal && status === 'complete') return personalDone(r.s);
-  return r.s.status === status;
+// Filter values match display states, except on personal passports, where
+// the Done / Not done states are filtered as complete / not_started.
+const PERSONAL_FILTER_KEYS = Object.freeze({ done: 'complete', not_done: 'not_started' });
+
+function statusMatches(r, status, opts) {
+  const key = displayState(r.s, opts);
+  if (!key) return false;
+  if (opts.personal) return Object.hasOwn(PERSONAL_FILTER_KEYS, key) && PERSONAL_FILTER_KEYS[key] === status;
+  return key === status;
 }
 
 function rowShown(r, b) {
   if (search.on && !(search.matches && search.matches.has(r.code))) return false;
-  if (b.status.length && !b.status.some((st) => statusMatches(r, st, b.opts.personal))) return false;
+  if (b.status.length && !b.status.some((st) => statusMatches(r, st, b.opts))) return false;
   if (b.mine && (r.s.done_by_me === true) !== (b.mine === 'done')) return false;
   if (b.region.length && !b.region.includes(r.region)) return false;
   return !b.stars || (r.rating !== null && r.rating >= b.stars);
@@ -1160,7 +1197,7 @@ function countryListHtml(rows, b) {
       if (regions.includes(region)) html += `<li class="region-heading"><h3>${esc(region)}</h3></li>`;
     }
     const hint = search.on && search.matches ? search.matches.get(r.code) : '';
-    html += countryRowHtml(r.s, r.country, b.opts.personal, hint);
+    html += countryRowHtml(r.s, r.country, b.opts, hint);
   }
   return html;
 }
@@ -1350,8 +1387,10 @@ function syncFilters() {
   const { opts } = browse;
   $('filter-status-none').textContent = opts.personal ? 'Not done' : 'Not started';
   $('filter-status-complete').textContent = opts.personal ? 'Done' : 'Fully complete';
-  $('filter-status-some-row').hidden = opts.personal;
-  for (const box of form.querySelectorAll('input[name="status"]')) box.checked = browse.status.includes(box.value);
+  for (const box of form.querySelectorAll('input[name="status"]')) {
+    box.closest('label').hidden = !opts.statuses.includes(box.value);
+    box.checked = browse.status.includes(box.value);
+  }
   $('filters-mine').hidden = !opts.mine;
   for (const radio of form.querySelectorAll('input[name="mine"]')) radio.checked = radio.value === browse.mine;
   $('filters-region-group').hidden = regionList().length === 0;
@@ -1417,8 +1456,6 @@ const MAP_TAP_MS = 300;
 const MAP_TAP_PX = 8;
 // A dot is only 8 px across, so a tap this close to one counts as a tap on it.
 const MAP_DOT_REACH_PX = 14;
-const MAP_STATUS_CLASSES = { not_started: 'status-none', some: 'status-some', complete: 'status-complete' };
-const MAP_CARD_LABELS = { not_started: 'Not started', some: 'Some participants', complete: 'Fully complete' };
 
 const mapSvg = $('map-svg');
 // Parsed map.json ({width, height, countries, dots, other}); dropped on logout.
@@ -1584,8 +1621,9 @@ function showViewMode() {
   const { personal, mine } = browse.opts;
   $('legend-none').textContent = personal ? 'Not done' : 'Not started';
   $('legend-complete').textContent = personal ? 'Done' : 'Fully complete';
-  $('legend-some').hidden = personal;
-  $('legend-todo').hidden = !mine;
+  $('legend-some').hidden = personal || mine;
+  $('legend-your-turn').hidden = !mine;
+  $('legend-waiting').hidden = !mine;
   if (map) ensureMap();
 }
 
@@ -1604,16 +1642,11 @@ $('view-switch').addEventListener('click', (event) => {
   writeBrowseAddress();
 });
 
-// Classes from fixed literals only; `status` is looked up, never copied.
-function mapClass(base, row, shown, personal, todo, picked) {
+// Classes from fixed literals only (the display-state table).
+function mapClass(base, row, shown, opts, picked) {
   const cls = [base];
-  if (row) {
-    let status = typeof row.s.status === 'string' && Object.hasOwn(MAP_STATUS_CLASSES, row.s.status)
-      ? row.s.status : null;
-    if (personal && status) status = personalDone(row.s) ? 'complete' : 'not_started';
-    if (status) cls.push(MAP_STATUS_CLASSES[status]);
-    if (todo && row.s.done_by_me === false) cls.push('map-todo');
-  }
+  const entry = row ? displayEntry(row.s, opts) : null;
+  if (entry) cls.push(entry[2]);
   if (!shown) cls.push('map-dim');
   if (picked) cls.push('map-picked');
   return cls.join(' ');
@@ -1631,24 +1664,19 @@ function mapShownCodes(rows) {
   return new Set(browseRows.map((r) => r.code));
 }
 
-// `todo` (the outline) is browse.opts.mine: participants of shared passports
-// only. Outlined shapes are moved to the end of their group so neighbours
-// drawn later don't cover the outline.
+// The picked country's shapes are moved to the end of their group so
+// neighbours drawn later don't cover its highlight.
 function colourMap(rows) {
   if (!mapBuilt || !browse) return;
-  const { personal, mine } = browse.opts;
   const byCode = new Map(browseRows.map((r) => [r.code, r]));
   const shown = mapShownCodes(rows);
   const pickedCode = mapPicked && mapPicked.id === browse.id ? mapPicked.code : null;
-  const outlined = [];
   const picked = [];
   for (const { el, code, base } of mapShapes) {
-    const cls = mapClass(base, byCode.get(code), shown.has(code), personal, mine, code === pickedCode);
-    el.setAttribute('class', cls);
+    el.setAttribute('class', mapClass(base, byCode.get(code), shown.has(code), browse.opts, code === pickedCode));
     if (code === pickedCode) picked.push(el);
-    else if (cls.includes('map-todo')) outlined.push(el);
   }
-  for (const el of [...outlined, ...picked]) el.parentNode.append(el);
+  for (const el of picked) el.parentNode.append(el);
   mapSvg.setAttribute('aria-label', passport ? `World map of ${passport.passport.name}` : 'World map');
 }
 
@@ -2041,9 +2069,8 @@ function jumpToEarlyPick() {
 // ---- World map: the country card ----
 
 function mapCardStatus(row) {
-  if (!row || typeof row.s.status !== 'string' || !Object.hasOwn(MAP_CARD_LABELS, row.s.status)) return '';
-  if (browse.opts.personal) return personalDone(row.s) ? 'Done' : 'Not done';
-  return MAP_CARD_LABELS[row.s.status];
+  const entry = row ? displayEntry(row.s, browse.opts) : null;
+  return entry ? entry[3] : '';
 }
 
 // Shown at the top of the frame for a tap in its lower half, else at the bottom.
@@ -2056,8 +2083,6 @@ function openMapCard(code, clientY) {
   $('map-card-flag').textContent = flagFor(code);
   $('map-card-name').textContent = country.name;
   $('map-card-status').textContent = mapCardStatus(row);
-  const you = !browse.opts.personal && row && row.s.done_by_me === true;
-  $('map-card-you').textContent = you ? '✓ You' : '';
   const card = $('map-card');
   card.classList.toggle('map-card-top', top);
   card.classList.toggle('map-card-bottom', !top);
@@ -2068,7 +2093,7 @@ function openMapCard(code, clientY) {
 function closeMapCard() {
   mapCardCode = null;
   $('map-card').hidden = true;
-  for (const id of ['map-card-flag', 'map-card-name', 'map-card-status', 'map-card-you']) $(id).textContent = '';
+  for (const id of ['map-card-flag', 'map-card-name', 'map-card-status']) $(id).textContent = '';
 }
 
 $('map-card-open').addEventListener('click', () => {
@@ -2465,6 +2490,17 @@ $('people-open').addEventListener('click', () => {
 const canLogMeals = () => passport !== null
   && (passport.passport.role === 'owner' || passport.passport.role === 'participant');
 
+// For an owner or participant of a shared passport, the "some" line says whose
+// turn it is. "Me" is the one participant whose integer id is the session
+// user's (never matched by name); anything ambiguous gets the general line.
+function someStatusText(participants) {
+  const role = passport ? passport.passport.role : '';
+  if (role !== 'owner' && role !== 'participant') return 'Some participants have eaten here';
+  const me = participants.filter((p) => p && Number.isInteger(p.id) && state.user && p.id === state.user.id);
+  if (me.length !== 1 || typeof me[0].done !== 'boolean') return 'Some participants have eaten here';
+  return me[0].done ? "Waiting on others: you've eaten here" : 'Your turn: others have eaten here';
+}
+
 function countryStatusText(data, participants, personal) {
   if (personal) {
     const owner = participants[0];
@@ -2476,7 +2512,7 @@ function countryStatusText(data, participants, personal) {
     const date = formatDay(data.completed_on);
     return date ? `Fully complete on ${date}` : 'Fully complete';
   }
-  if (data.status === 'some') return 'Some participants have eaten here';
+  if (data.status === 'some') return someStatusText(participants);
   if (data.status === 'not_started') return 'Not started';
   return '';
 }

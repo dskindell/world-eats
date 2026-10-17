@@ -24,12 +24,17 @@
   --status-none: #9aa4b1;
   --status-some: #e9c46a;
   --status-complete: #6fcf97;
+  /* Participants of shared passports: others have eaten here, you haven't. */
+  --status-your-turn: #5ea2ff;
+  /* Map fill (and map legend swatch) for not started: darker than the badge
+     grey so it differs from Your turn in lightness, not just hue (2.17:1),
+     and still lighter than --map-other when dimmed. */
+  --map-none: #5f6874;
   /* World map: land outside the 197 (darker than any dimmed country, no
-     border), borders, and the "not done by you" outline. The sea is --bg;
-     country fills are the status colours above. */
+     border) and borders. The sea is --bg; country fills are the status
+     colours above. */
   --map-other: #1e2329;
   --map-border: #121519;
-  --map-todo: #dfe4ea;
   /* The random pick's highlight on the map. */
   --map-picked: #ff4fa3;
   /* Random pick: the split-flap departure board. */
@@ -636,9 +641,15 @@ h1:focus {
   border-color: var(--status-none);
 }
 
-.badge-status-some {
+.badge-status-some,
+.badge-status-waiting {
   color: var(--status-some);
   border-color: var(--status-some);
+}
+
+.badge-status-your-turn {
+  color: var(--status-your-turn);
+  border-color: var(--status-your-turn);
 }
 
 .badge-status-complete {
@@ -1137,12 +1148,17 @@ h1:focus {
 
 .map-country,
 .map-dot {
-  fill: var(--status-none);
+  fill: var(--map-none);
   cursor: pointer;
 }
 
-.map-svg .status-some {
+.map-svg .status-some,
+.map-svg .status-waiting {
   fill: var(--status-some);
+}
+
+.map-svg .status-your-turn {
+  fill: var(--status-your-turn);
 }
 
 .map-svg .status-complete {
@@ -1153,12 +1169,6 @@ h1:focus {
   stroke-width: 1.5px;
 }
 
-.map-svg .map-todo {
-  stroke: var(--map-todo);
-  stroke-width: 1px;
-}
-
-/* After .map-todo so the pick's highlight wins. */
 .map-svg .map-picked {
   stroke: var(--map-picked);
   stroke-width: 2.5px;
@@ -1222,12 +1232,6 @@ h1:focus {
   font-size: 0.875rem;
 }
 
-.map-card-you:not(:empty) {
-  margin-left: 0.5rem;
-  color: var(--text);
-  font-weight: 600;
-}
-
 .map-card .btn {
   flex-shrink: 0;
 }
@@ -1269,19 +1273,20 @@ h1:focus {
 }
 
 .legend-swatch.status-none {
-  background: var(--status-none);
+  background: var(--map-none);
 }
 
-.legend-swatch.status-some {
+.legend-swatch.status-some,
+.legend-swatch.status-waiting {
   background: var(--status-some);
+}
+
+.legend-swatch.status-your-turn {
+  background: var(--status-your-turn);
 }
 
 .legend-swatch.status-complete {
   background: var(--status-complete);
-}
-
-.legend-swatch-todo {
-  border: 2px solid var(--map-todo);
 }
 
 /* Small screens: the map frame reaches the screen edges (past the card's

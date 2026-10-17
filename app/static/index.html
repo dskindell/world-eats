@@ -141,7 +141,7 @@
               <div class="map-card" id="map-card" hidden>
                 <div class="map-card-text">
                   <p class="map-card-name"><span class="flag" id="map-card-flag" aria-hidden="true"></span> <span id="map-card-name"></span></p>
-                  <p class="map-card-status"><span id="map-card-status"></span><span class="map-card-you" id="map-card-you"></span></p>
+                  <p class="map-card-status" id="map-card-status"></p>
                 </div>
                 <button type="button" class="btn btn-primary" id="map-card-open">Open</button>
               </div>
@@ -153,9 +153,10 @@
             </div>
             <ul class="map-legend" id="map-legend">
               <li><span class="legend-swatch status-none" aria-hidden="true"></span><span id="legend-none">Not started</span></li>
+              <li id="legend-your-turn"><span class="legend-swatch status-your-turn" aria-hidden="true"></span>Your turn</li>
+              <li id="legend-waiting"><span class="legend-swatch status-waiting" aria-hidden="true"></span>Waiting on others</li>
               <li id="legend-some"><span class="legend-swatch status-some" aria-hidden="true"></span>Some</li>
               <li><span class="legend-swatch status-complete" aria-hidden="true"></span><span id="legend-complete">Fully complete</span></li>
-              <li id="legend-todo"><span class="legend-swatch legend-swatch-todo" aria-hidden="true"></span>Outline = not done by you</li>
             </ul>
           </div>
         </div>
@@ -612,7 +613,9 @@
       <fieldset class="group">
         <legend>Status</legend>
         <label class="check"><input type="checkbox" name="status" value="not_started"> <span id="filter-status-none">Not started</span></label>
-        <label class="check" id="filter-status-some-row"><input type="checkbox" name="status" value="some"> Some</label>
+        <label class="check"><input type="checkbox" name="status" value="your_turn"> Your turn</label>
+        <label class="check"><input type="checkbox" name="status" value="waiting"> Waiting on others</label>
+        <label class="check"><input type="checkbox" name="status" value="some"> Some</label>
         <label class="check"><input type="checkbox" name="status" value="complete"> <span id="filter-status-complete">Fully complete</span></label>
       </fieldset>
       <fieldset class="group" id="filters-mine">
