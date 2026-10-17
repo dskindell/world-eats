@@ -1,4 +1,4 @@
-"""The 197 countries (contract .claude/specs/3-countries-meals.md, section 2).
+"""The 197 countries.
 
 The 193 UN member states plus Kosovo, Palestine, Taiwan and Vatican City, with
 ISO 3166-1 alpha-2 codes (XK for Kosovo) and UN M49 regions mapped to six

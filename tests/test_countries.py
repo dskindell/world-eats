@@ -1,4 +1,4 @@
-"""Feature 3: the country list (contract .claude/specs/3-countries-meals.md, sections 2 and 6)."""
+"""Feature 3: the country list."""
 
 import json
 import re

@@ -1,4 +1,4 @@
-"""Feature 3: meals and per-country progress (contract .claude/specs/3-countries-meals.md, section 8)."""
+"""Feature 3: meals and per-country progress."""
 
 import datetime
 import json

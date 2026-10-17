@@ -1,4 +1,4 @@
-"""Passport storage helpers (contract .claude/specs/2-passports.md, sections 2 and 6).
+"""Passport storage helpers.
 
 Every function takes the request's connection. Writers run inside the caller's
 write transaction and never open one. Nothing here raises ApiError: endpoints

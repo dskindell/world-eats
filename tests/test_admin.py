@@ -1,4 +1,4 @@
-"""Feature 1b: admin screen (contract .claude/specs/1b-admin-screen.md, section 8)."""
+"""Feature 1b: admin screen."""
 
 import threading
 from unittest import mock

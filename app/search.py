@@ -1,4 +1,4 @@
-"""Search (contract .claude/specs/4-browse.md, sections 3 and 4).
+"""Search.
 
 A change to fold() needs a new migration that recomputes meals.search_text for
 every meal (as migration 5 does); stored text folded the old way would no longer

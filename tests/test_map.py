@@ -1,4 +1,4 @@
-"""Feature 6: the world map data (contract .claude/specs/6-world-map.md, sections 2 and 4).
+"""Feature 6: the world map data.
 
 MapFileTests check the generated app/static/map.json; MapServeTests check how it's served;
 the Build* tests run tools/build_map.py on a tiny synthetic GeoJSON.

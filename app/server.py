@@ -2,8 +2,7 @@
 
 Stdlib only (http.server + sqlite3). Feature 1a: first-visit setup, login,
 sessions and account settings; feature 1b: admin screen; feature 2: passports;
-feature 3: countries and meals; feature 4: search. See .claude/specs/1a-login-basics.md,
-1b-admin-screen.md, 2-passports.md, 3-countries-meals.md and 4-browse.md.
+feature 3: countries and meals; feature 4: search; feature 6: the world map data.
 
 Patterns for later features:
 - ROUTES is an ordered list of (compiled regex, {method: Route(handler, ...options)}),

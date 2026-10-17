@@ -1,4 +1,4 @@
-"""Feature 4: search and done_count (contract .claude/specs/4-browse.md, section 6)."""
+"""Feature 4: search and done_count."""
 
 import json
 import sqlite3

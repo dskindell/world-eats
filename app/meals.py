@@ -1,4 +1,4 @@
-"""Meals and per-country progress (contract .claude/specs/3-countries-meals.md, sections 3, 5 and 6).
+"""Meals and per-country progress.
 
 Validators raise auth.Invalid (a 400) and never touch the database. Storage
 helpers take the request's connection and run inside the caller's transaction;

@@ -1,4 +1,4 @@
-"""Feature 2: passports (contract .claude/specs/2-passports.md, section 8)."""
+"""Feature 2: passports."""
 
 import threading
 from unittest import mock

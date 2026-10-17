@@ -1,4 +1,4 @@
-"""Builds app/static/map.json from Natural Earth (contract .claude/specs/6-world-map.md, section 2).
+"""Builds app/static/map.json from Natural Earth.
 
 Run by hand, never in the image:
 
