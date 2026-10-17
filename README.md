@@ -1,29 +1,59 @@
 # World Eats
 
-Pick a random country to eat from, and keep track of the countries we've done.
+A small self-hosted web app for a "eat a meal from every country" challenge. Pick a random country, eat a meal from it (usually at a restaurant), log what you had, and watch the world map fill in.
 
-Runs on host port 7197. Set `WORLD_EATS_ALLOWED_HOSTS` to the hostname you use to reach it.
+It is dependency-free: Python standard library only (`http.server` and `sqlite3`) on the server, vanilla JS/HTML/CSS in the browser, no build step, and no requests to outside services at runtime. Dark theme, designed phone-first.
 
-**Status:** being built one feature at a time. So far: accounts and login (first-visit admin setup, login/logout, account settings).
+![Map view on a desktop browser](docs/screenshots/desktop-map.png)
 
-## Layout
+<p>
+  <img src="docs/screenshots/phone-map.png" alt="Map on a phone" width="24%">
+  <img src="docs/screenshots/phone-list.png" alt="Country list on a phone" width="24%">
+  <img src="docs/screenshots/phone-pick.png" alt="Random pick on the departure board" width="24%">
+  <img src="docs/screenshots/phone-country.png" alt="A country with its meals" width="24%">
+</p>
 
-- `app/server.py` - Python stdlib HTTP server + SQLite, no dependencies.
-- `app/static/` - frontend (vanilla HTML/JS/CSS, no build step).
-- `tests/` - `unittest` suite (stdlib only).
-- `tools/build_map.py` - builds `app/static/map.json` from Natural Earth data (run by hand; not in the image).
-- Data: one SQLite database in `/data` inside the container, `./data` next to the compose file on the host (gitignored).
+The screenshots use sample users (Alex and Sam).
+
+## Contents
+
+- [Features](#features)
+- [Run](#run)
+- [Configuration](#configuration)
+- [Behind a reverse proxy](#behind-a-reverse-proxy)
+- [Security notes](#security-notes)
+- [If no admin can log in](#if-no-admin-can-log-in)
+- [Login lockout](#login-lockout)
+- [Backup](#backup)
+- [Country list](#country-list)
+- [World map](#world-map)
+- [Tests](#tests)
+- [Layout](#layout)
+- [Security policy](#security-policy) and [License](#license)
+
+## Features
+
+- **Accounts without sign-up.** The first visit to a fresh install shows a setup page that creates the first admin. After that, admins create, disable, delete and promote users, reset passwords and unlock locked accounts. Sessions last 30 days and can run on several devices; "Log out everywhere" is in account settings.
+- **Passports.** A passport is one challenge. Every account gets a personal passport (named "My passport"; it can't be deleted and can't have participants). You can also create shared passports, up to 50 owned per user and 20 people each. *Participants* each log their own meals; *viewers* can see everything but can't log. Only the owner renames or deletes a passport or changes who is in it. You can choose which passport the app opens to.
+- **Meals.** Log the date, what you ate, where, a 1-5 star rating and notes (all optional except the date). You can log several meals per country, and edit or delete your own. A country counts as done for you once you have logged a meal there, and is *fully complete* when every active participant has.
+- **Search, sort and filters.** Search ignores case and accents and matches country names, alternative names (for example "Burma" finds Myanmar) and everyone's meals. Sort by name, region, date completed, rating or progress; filter by status, who has done it, region and minimum rating. The state is kept in the page address.
+- **Random pick.** "Pick a country" chooses at random among the countries you haven't done that match the current search and filters, and reveals it on an airport split-flap departure board (it respects the browser's reduced-motion setting). The pick isn't saved.
+- **World map.** Equal Earth projection, drawn from bundled Natural Earth data. Countries are coloured by status, tap one to see a summary card, and zoom with pinch, mouse wheel and drag, or the +, - and Reset buttons. Tiny countries appear as dots. A List / Map switch sits under the search bar.
 
 ## Run
+
+Requirements: Docker with Compose.
 
 ```bash
 mkdir -m 700 data      # owned by you; compose runs the app as UID/GID 1000 to match
 docker compose up -d --build
 ```
 
+The app is then on host port 7197 (`http://localhost:7197`). The compose file builds the image locally, runs it as a read-only container with all capabilities dropped, and mounts `./data` as `/data`.
+
 If your user isn't UID 1000 (`id -u`), change `user:` in `docker-compose.yml` to match. Without a `user:` line the image runs as UID 10001, and `./data` must then be owned by 10001.
 
-Then open the app and create the first account on the setup page. **Complete setup before exposing the app to anyone else:** until an account exists, whoever opens the app first becomes admin.
+Open the app and create the first account on the setup page. **Complete setup before exposing the app to anyone else:** until an account exists, whoever opens the app first becomes admin.
 
 ## Country list
 
@@ -54,7 +84,7 @@ The app serves plain HTTP; put your own reverse proxy in front for HTTPS.
 - **Give World Eats its own hostname.** Browsers don't keep cookies separate by port, so if you reach the app by IP address and port (e.g. `http://192.0.2.10:7197`), every other web service on that IP receives your World Eats login cookie. A compromised service there could use it to act as you, including as an admin. Use a dedicated hostname (and HTTPS) before you rely on the app, and before you create a second admin.
 - **Deleting an account removes its data from the database file** (the app overwrites deleted content), but **backups made before the deletion still contain it**, and old copies can linger in the database's `-wal` file until SQLite next checkpoints it.
 - **Every logged-in user can see every username** (to add people to passports), so anyone with an account can lock another account out for 15 minutes by typing wrong passwords. An admin can use Unlock.
-- **Admins can reset any password, which gives them access to that account.** The user will notice, because they're logged out everywhere and their password stops working. (Planned: when self-service password recovery is added, admin resets will be removed.)
+- **Admins can reset any password, which gives them access to that account.** The user will notice, because they're logged out everywhere and their password stops working. 
 
 ## If no admin can log in
 
@@ -106,3 +136,21 @@ The script refuses any input whose SHA-256 isn't `3e458fc036ad0a66411f2c1e6cac49
 ```bash
 docker run --rm -v "$PWD":/src:ro -w /src python:3.12-slim python -m unittest discover -s tests -t . -v
 ```
+
+## Layout
+
+- `app/server.py` - HTTP server, routing and request handling.
+- `app/auth.py`, `app/config.py`, `app/db.py`, `app/countries.py`, `app/meals.py`, `app/passports.py`, `app/search.py` - validation, passwords and lockout; configuration; SQLite schema and migrations; the country list; meals; passports; search.
+- `app/static/` - frontend (vanilla HTML/JS/CSS, no build step) and the generated `map.json`.
+- `app/Dockerfile` - the image (Python 3.12 slim, runs as a non-root user).
+- `tests/` - `unittest` suite (stdlib only).
+- `tools/build_map.py` - builds `app/static/map.json` from Natural Earth data (run by hand; not in the image).
+- Data: one SQLite database in `/data` inside the container, `./data` next to the compose file on the host (gitignored).
+
+## Security policy
+
+See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
+
+## License
+
+MIT; see [LICENSE](LICENSE).
