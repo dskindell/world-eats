@@ -2125,10 +2125,20 @@ let pickStart = 0;
 
 const FLAP_CHARS = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const PICK_TICK_MS = 60;
-// Tile i stops at PICK_FIRST_MS + i * PICK_SPREAD_MS / (length - 1): the first
-// at 400 ms, the last at 2500 ms (spaces count as positions).
+// Tile i (row-major over the whole board) stops at
+// PICK_FIRST_MS + i * PICK_SPREAD_MS / (N - 1), N = rows x cols: the first at
+// 400 ms, the last at 2500 ms, whatever the country.
 const PICK_FIRST_MS = 400;
 const PICK_SPREAD_MS = 2100;
+// The board's size comes from its width and the 197 names only, never the pick.
+// 12 columns fit down to 320 px (narrower tiles below 375 px, in CSS).
+const PICK_MIN_COLS = 12;
+const PICK_MAX_COLS = 40;
+const PICK_ROWS = 2;
+// Board-only short forms, used when the full name doesn't fit PICK_ROWS rows at
+// the current width. Fixed text keyed by code; the full name is shown under the board.
+const BOARD_SHORT_NAMES = { CF: 'Central African Rep.', VC: 'St Vincent & Grenadines' };
+const clampInt = (n, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(n) ? Math.floor(n) : lo));
 
 const pickButtons = () => [$('pick-log'), $('pick-country'), $('pick-again')];
 
@@ -2213,25 +2223,88 @@ function stopPick() {
   for (const button of pickButtons()) button.disabled = true;
 }
 
-// One tile per code point; each word is kept together (a word wider than the
-// board wraps inside itself). A space is a blank tile ending its word, so a
-// line never starts with a gap.
-function buildTiles(name) {
-  const chars = Array.from(name.normalize('NFC').toLocaleUpperCase('en'));
-  const box = $('pick-tiles');
-  const step = chars.length > 1 ? PICK_SPREAD_MS / (chars.length - 1) : 0;
-  let word = null;
-  pickTiles = chars.map((ch, i) => {
-    if (!word) {
-      word = document.createElement('span');
-      word.className = 'pick-word';
-      box.append(word);
+// A name as board rows of code points (each at most `cols`): upper-cased,
+// words placed left to right with greedy wrap, a word longer than a row
+// broken by characters. Used for the board's size and for placing the pick.
+function layoutName(name, cols) {
+  const words = Array.from(name.normalize('NFC').toLocaleUpperCase('en').normalize('NFC'))
+    .reduce((acc, ch) => {
+      if (ch === ' ') acc.push([]);
+      else acc[acc.length - 1].push(ch);
+      return acc;
+    }, [[]])
+    .filter((w) => w.length > 0);
+  const rows = [];
+  let row = [];
+  for (const word of words) {
+    let rest = word;
+    // Each pass places the word, starts a new row, or places `cols` characters.
+    while (rest.length > 0) {
+      if ((row.length ? row.length + 1 : 0) + rest.length <= cols) {
+        if (row.length) row.push(' ');
+        row.push(...rest);
+        rest = [];
+      } else if (row.length) {
+        rows.push(row);
+        row = [];
+      } else {
+        rows.push(rest.slice(0, cols));
+        rest = rest.slice(cols);
+      }
     }
-    const el = textEl('span', ch === ' ' ? '' : ch, ch === ' ' ? 'pick-tile pick-tile-space' : 'pick-tile');
-    word.append(el);
-    if (ch === ' ') word = null;
-    return { el, ch, stopAt: PICK_FIRST_MS + i * step, done: ch === ' ' };
-  });
+  }
+  if (row.length) rows.push(row);
+  return rows;
+}
+
+// Columns that fit the board's current width (tile and gap measured from CSS
+// with a throwaway row). Always PICK_ROWS rows.
+function measureBoard() {
+  const box = $('pick-tiles');
+  const probe = document.createElement('span');
+  probe.className = 'pick-board-row';
+  const tile = textEl('span', '', 'pick-tile');
+  probe.append(tile);
+  box.replaceChildren(probe);
+  const gap = parseFloat(getComputedStyle(probe).columnGap) || 0;
+  const tileWidth = tile.getBoundingClientRect().width;
+  const width = box.getBoundingClientRect().width;
+  box.replaceChildren();
+  const cols = clampInt(tileWidth > 0 ? (width + gap) / (tileWidth + gap) : 0, PICK_MIN_COLS, PICK_MAX_COLS);
+  return { cols, rows: PICK_ROWS };
+}
+
+// Builds rows x cols identical tiles; the character each one settles on (a
+// letter, or a space for a blank) lives only in its JS object. Returns false
+// if the name (or its short form) needs more rows than the board has (then
+// it settles at once).
+function buildTiles(code, name) {
+  const { cols, rows } = measureBoard();
+  let layout = layoutName(name, cols);
+  if (layout.length > rows && Object.hasOwn(BOARD_SHORT_NAMES, code)) layout = layoutName(BOARD_SHORT_NAMES[code], cols);
+  const n = rows * cols;
+  const step = PICK_SPREAD_MS / (n - 1);
+  const box = $('pick-tiles');
+  pickTiles = [];
+  for (let r = 0; r < rows; r += 1) {
+    const rowEl = document.createElement('span');
+    rowEl.className = 'pick-board-row';
+    for (let c = 0; c < cols; c += 1) {
+      const el = textEl('span', '', 'pick-tile');
+      rowEl.append(el);
+      const ch = (layout[r] && layout[r][c]) || ' ';
+      pickTiles.push({ el, ch, stopAt: PICK_FIRST_MS + pickTiles.length * step, done: false });
+    }
+    box.append(rowEl);
+  }
+  return layout.length <= rows;
+}
+
+// A settled tile: its letter, or blank.
+function settleTile(t) {
+  t.done = true;
+  t.el.textContent = t.ch === ' ' ? '' : t.ch;
+  t.el.className = t.ch === ' ' ? 'pick-tile pick-tile-blank' : 'pick-tile';
 }
 
 function startPick(code) {
@@ -2240,8 +2313,8 @@ function startPick(code) {
   const country = countriesCache.get(code);
   pickCurrent = { id: browse.id, code };
   lastPick = { id: browse.id, code };
-  buildTiles(country.name);
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
+  const fits = buildTiles(code, country.name);
+  if (!fits || matchMedia('(prefers-reduced-motion: reduce)').matches) {
     settlePick();
     return;
   }
@@ -2265,9 +2338,7 @@ function tickPick(gen) {
   pickTiles.forEach((t, i) => {
     if (t.done) return;
     if (elapsed >= t.stopAt) {
-      t.done = true;
-      t.el.textContent = t.ch;
-      t.el.className = 'pick-tile';
+      settleTile(t);
       return;
     }
     left += 1;
@@ -2292,13 +2363,11 @@ function settlePick() {
     stopPick();
     return;
   }
-  for (const t of pickTiles) {
-    t.el.textContent = t.ch === ' ' ? '' : t.ch;
-    t.el.className = t.ch === ' ' ? 'pick-tile pick-tile-space' : 'pick-tile';
-  }
+  for (const t of pickTiles) settleTile(t);
   const region = typeof country.region === 'string' ? country.region : '';
   $('pick-flag').textContent = flagFor(pickCurrent.code);
-  $('pick-region').textContent = region;
+  // The full name, also when the board shows a short form.
+  $('pick-region').textContent = region ? `${country.name} · ${region}` : country.name;
   $('pick-place').classList.remove('is-pending');
   $('pick-live').textContent = region ? `Next stop: ${country.name}, ${region}` : `Next stop: ${country.name}`;
   $('pick-board').disabled = true;

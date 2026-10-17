@@ -204,9 +204,20 @@ h1:focus {
 /* ---- Layout ---- */
 
 .main {
-  max-width: 34rem;
-  margin: 0 auto;
   padding: 1.25rem 1rem 6rem;
+}
+
+/* Every page is narrow (the same content width as before the passport page
+   could widen); the passport page (.view-wide) widens on desktop. */
+.view {
+  max-width: 32rem;
+  margin: 0 auto;
+}
+
+@media (min-width: 900px) {
+  .view.view-wide {
+    max-width: 75rem;
+  }
 }
 
 .view > * + * {
@@ -668,6 +679,39 @@ h1:focus {
   border-radius: 0 0 var(--radius) var(--radius);
 }
 
+/* Two columns, filled row by row; every item draws its own top border so the
+   rows line up across the columns. */
+@media (min-width: 900px) {
+  .country-list {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .country-list > li {
+    border-top: 1px solid var(--border);
+  }
+
+  .country-list > .region-heading {
+    grid-column: 1 / -1;
+  }
+
+  .country-list > li:last-child .country-row {
+    border-radius: 0;
+  }
+
+  /* Rounded and clipped as a whole, so a hovered bottom row stays inside the
+     card's corners. */
+  .country-list {
+    border-radius: 0 0 var(--radius) var(--radius);
+    overflow: hidden;
+  }
+
+  /* Rows in one grid line can differ in height (meal hints): fill the cell. */
+  .country-list > li:not(.region-heading) {
+    display: flex;
+  }
+}
+
 .flag {
   flex-shrink: 0;
   font-size: 1.375rem;
@@ -901,6 +945,7 @@ h1:focus {
   display: block;
   width: 100%;
   min-height: var(--tap);
+  overflow: hidden;
   padding: 0.75rem 0.5rem;
   background: var(--board-bg);
   color: var(--board-text);
@@ -914,18 +959,18 @@ h1:focus {
   cursor: default;
 }
 
+/* rows x cols identical tiles: one .pick-board-row per row, each exactly cols
+   tiles wide (app.js measures cols when the board opens and never reflows). */
 .pick-tiles {
   display: flex;
-  flex-wrap: wrap;
-  gap: 0.375rem 3px;
+  flex-direction: column;
+  gap: 0.375rem;
 }
 
-/* Words never break between tiles unless one is wider than the board. */
-.pick-word {
+.pick-board-row {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: 3px;
-  max-width: 100%;
 }
 
 .pick-tile {
@@ -933,6 +978,7 @@ h1:focus {
   align-items: center;
   justify-content: center;
   /* 13 tiles (Liechtenstein, Guinea-Bissau) fit one row on a 390 px screen. */
+  flex-shrink: 0;
   width: 1.1875rem;
   height: 1.875rem;
   /* The hinge across the middle of the flap, drawn behind the letter. */
@@ -955,8 +1001,9 @@ h1:focus {
   animation: pick-flip-b 90ms ease-out;
 }
 
-.pick-tile.pick-tile-space {
-  background: transparent;
+/* Settled without a letter: the flap stays, dimmed so the name stands out. */
+.pick-tile.pick-tile-blank {
+  opacity: 0.45;
 }
 
 @keyframes pick-flip-a {
@@ -976,14 +1023,21 @@ h1:focus {
   }
 }
 
-/* Room is kept for the flag and region so the buttons don't jump on settling. */
+/* "<flag> <full name> · <region>". Room for two lines is kept from the start
+   (one on the wide desktop dialog) so the dialog doesn't change size. */
 .pick-place {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 0.5rem;
-  min-height: 1.75rem;
+  min-height: 3rem;
   margin: 0;
   font-weight: 600;
+}
+
+@media (min-width: 900px) {
+  .pick-place {
+    min-height: 1.75rem;
+  }
 }
 
 .pick-place.is-pending {
@@ -1049,9 +1103,14 @@ h1:focus {
 }
 
 /* The height follows the viewBox, which always keeps the map's proportions. */
+/* 1000 / 435.2 is map.json's width / height: capping the width this way keeps
+   the height within 70vh without letterboxing. Update it if map.json is
+   regenerated with another height. */
 .map-svg {
   display: block;
   width: 100%;
+  max-width: calc(70vh * 1000 / 435.2);
+  margin-inline: auto;
   height: auto;
   touch-action: none;
   user-select: none;
@@ -1124,6 +1183,14 @@ h1:focus {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: 0 8px 24px var(--shadow);
+}
+
+/* On a wide map the card stays card-sized, at the left. */
+@media (min-width: 900px) {
+  .map-card {
+    right: auto;
+    width: 26rem;
+  }
 }
 
 .map-card-top {
@@ -1215,4 +1282,28 @@ h1:focus {
 
 .legend-swatch-todo {
   border: 2px solid var(--map-todo);
+}
+
+/* Small screens: the map frame reaches the screen edges (past the card's
+   padding and border and the page gutter). Below 544 px (32rem + 2 x 1rem
+   gutter) the page fills the screen, so this lands exactly on the edges. */
+@media (max-width: 543.98px) {
+  .map-frame {
+    margin-inline: calc(-2rem - 1px);
+  }
+}
+
+/* A wider board on desktop: more columns, fewer rows. */
+@media (min-width: 900px) {
+  #pick-dialog {
+    width: min(44rem, calc(100vw - 2rem));
+  }
+}
+
+/* Below 375 px, slightly narrower tiles so the board still has 12 columns. */
+@media (max-width: 374.98px) {
+  .pick-tile {
+    width: 1rem;
+    font-size: 1rem;
+  }
 }
