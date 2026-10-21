@@ -1,5 +1,9 @@
 # World Eats
 
+[![Tests](https://github.com/dskindell/world-eats/actions/workflows/tests.yml/badge.svg)](https://github.com/dskindell/world-eats/actions/workflows/tests.yml)
+
+> **Beta.** World Eats works and is in regular use, but it's young: expect rough edges, and back up your data before upgrading.
+
 A small self-hosted web app for a "eat a meal from every country" challenge. Pick a random country, eat a meal from it (usually at a restaurant), log what you had, and watch the world map fill in.
 
 It is dependency-free: Python standard library only (`http.server` and `sqlite3`) on the server, vanilla JS/HTML/CSS in the browser, no build step, and no requests to outside services at runtime. Dark theme, designed phone-first.
@@ -18,6 +22,7 @@ The screenshots use sample users (Alex and Sam).
 ## Contents
 
 - [Features](#features)
+- [Known limitations](#known-limitations)
 - [Run](#run)
 - [Configuration](#configuration)
 - [Behind a reverse proxy](#behind-a-reverse-proxy)
@@ -28,6 +33,7 @@ The screenshots use sample users (Alex and Sam).
 - [Country list](#country-list)
 - [World map](#world-map)
 - [Tests](#tests)
+- [Future ideas](#future-ideas)
 - [Layout](#layout)
 - [Security policy](#security-policy) and [License](#license)
 
@@ -39,6 +45,13 @@ The screenshots use sample users (Alex and Sam).
 - **Search, sort and filters.** Search ignores case and accents and matches country names, alternative names (for example "Burma" finds Myanmar) and everyone's meals. Sort by name, region, date completed, rating or progress; filter by status, who has done it, region and minimum rating. The state is kept in the page address.
 - **Random pick.** "Pick a country" chooses at random among the countries you haven't done that match the current search and filters, and reveals it on an airport split-flap departure board (it respects the browser's reduced-motion setting). The pick isn't saved.
 - **World map.** Equal Earth projection, drawn from bundled Natural Earth data. Countries are coloured by status: in a shared passport each participant sees *Not started*, *Your turn* (someone else has eaten there, you haven't), *Waiting on others* (you have, someone else hasn't) and *Fully complete*, and the list and filters use the same states. Tap one to see a summary card, and zoom with pinch, mouse wheel and drag, or the +, - and Reset buttons. Tiny countries appear as dots. A List / Map switch sits under the search bar.
+
+## Known limitations
+
+- **Plain HTTP only.** For HTTPS, put your own reverse proxy in front (see [Behind a reverse proxy](#behind-a-reverse-proxy)).
+- **One server, one SQLite file.** It's built for a household or a small group on a single host, not for many users or several replicas.
+- **English only.**
+- **Map colours and red-green colour blindness.** The yellow (*Waiting on others*) and green (*Fully complete*) map colours can be hard to tell apart; the list, legend and country cards always show the state in words.
 
 ## Run
 
@@ -84,7 +97,7 @@ The app serves plain HTTP; put your own reverse proxy in front for HTTPS.
 - **Give World Eats its own hostname.** Browsers don't keep cookies separate by port, so if you reach the app by IP address and port (e.g. `http://192.0.2.10:7197`), every other web service on that IP receives your World Eats login cookie. A compromised service there could use it to act as you, including as an admin. Use a dedicated hostname (and HTTPS) before you rely on the app, and before you create a second admin.
 - **Deleting an account removes its data from the database file** (the app overwrites deleted content), but **backups made before the deletion still contain it**, and old copies can linger in the database's `-wal` file until SQLite next checkpoints it.
 - **Every logged-in user can see every username** (to add people to passports), so anyone with an account can lock another account out for 15 minutes by typing wrong passwords. An admin can use Unlock.
-- **Admins can reset any password, which gives them access to that account.** The user will notice, because they're logged out everywhere and their password stops working. 
+- **Admins can reset any password, which gives them access to that account.** The user will notice, because they're logged out everywhere and their password stops working.
 
 ## If no admin can log in
 
@@ -137,6 +150,23 @@ The script refuses any input whose SHA-256 isn't `3e458fc036ad0a66411f2c1e6cac49
 docker run --rm -v "$PWD":/src:ro -w /src python:3.12-slim python -m unittest discover -s tests -t . -v
 ```
 
+The same suite runs on GitHub Actions for every push and pull request (`.github/workflows/tests.yml`). It needs only Python 3.12; there are no dependencies to install.
+
+## Future ideas
+
+Ideas that might be explored one day. They're not commitments, and there's no timeline.
+
+- More reveal styles for the random pick (spin a globe, throw a dart at the map, a passport stamp).
+- Signing in with an OpenID Connect provider (for example Authentik).
+- Email, notifications and self-service password reset.
+- Export and import.
+- Backups from inside the app.
+- A globe view as an alternative to the flat map.
+- A per-passport setting for how many meals each person must log before a country counts as complete.
+- Photos on meals.
+- Map pins for where a meal was eaten.
+- A light theme.
+
 ## Layout
 
 - `app/server.py` - HTTP server, routing and request handling.
@@ -144,6 +174,7 @@ docker run --rm -v "$PWD":/src:ro -w /src python:3.12-slim python -m unittest di
 - `app/static/` - frontend (vanilla HTML/JS/CSS, no build step) and the generated `map.json`.
 - `app/Dockerfile` - the image (Python 3.12 slim, runs as a non-root user).
 - `tests/` - `unittest` suite (stdlib only).
+- `.github/workflows/tests.yml` - runs the test suite on GitHub Actions.
 - `tools/build_map.py` - builds `app/static/map.json` from Natural Earth data (run by hand; not in the image).
 - Data: one SQLite database in `/data` inside the container, `./data` next to the compose file on the host (gitignored).
 
