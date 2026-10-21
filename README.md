@@ -4,6 +4,8 @@
 
 > **Beta.** World Eats works and is in regular use, but it's young: expect rough edges, and back up your data before upgrading.
 
+> **Built with AI assistance.** World Eats was developed with heavy use of an AI coding assistant. The maintainer decided what to build and tested each feature; most of the code, tests and documentation were written by the AI, and checked with AI-run security and code reviews and the automated test suite. Review it as you would any other code before relying on it.
+
 A small self-hosted web app for a "eat a meal from every country" challenge. Pick a random country, eat a meal from it (usually at a restaurant), log what you had, and watch the world map fill in.
 
 It is dependency-free: Python standard library only (`http.server` and `sqlite3`) on the server, vanilla JS/HTML/CSS in the browser, no build step, and no requests to outside services at runtime. Dark theme, designed phone-first.
