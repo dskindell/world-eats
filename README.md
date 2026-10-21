@@ -36,6 +36,7 @@ The screenshots use sample users (Alex and Sam).
 - [World map](#world-map)
 - [Tests](#tests)
 - [Translations](#translations)
+- [Contributing](#contributing)
 - [Future ideas](#future-ideas)
 - [Layout](#layout)
 - [Security policy](#security-policy) and [License](#license)
@@ -58,18 +59,48 @@ The screenshots use sample users (Alex and Sam).
 
 ## Run
 
-Requirements: Docker with Compose.
+Requirements: Docker with Compose. Use a [release](https://github.com/dskindell/world-eats/releases) rather than the tip of `main`: `main` can already name the next version's image before it's published.
 
 ```bash
+git clone --branch v0.2.0-beta https://github.com/dskindell/world-eats.git && cd world-eats
 mkdir -m 700 data      # owned by you; compose runs the app as UID/GID 1000 to match
-docker compose up -d --build
+docker compose up -d
 ```
 
-The app is then on host port 7197 (`http://localhost:7197`). The compose file builds the image locally, runs it as a read-only container with all capabilities dropped, and mounts `./data` as `/data`.
+The app is then on host port 7197 (`http://localhost:7197`). The compose file pulls the published image for its release (`ghcr.io/dskindell/world-eats`, built for `amd64` and `arm64`), runs it as a read-only container with all capabilities dropped, and mounts `./data` as `/data`.
 
 If your user isn't UID 1000 (`id -u`), change `user:` in `docker-compose.yml` to match. Without a `user:` line the image runs as UID 10001, and `./data` must then be owned by 10001.
 
 Open the app and create the first account on the setup page. **Complete setup before exposing the app to anyone else:** until an account exists, whoever opens the app first becomes admin.
+
+### Image tags and upgrading
+
+| Tag | Points at |
+|---|---|
+| `0.2.0-beta` (any exact version) | That release, never changed |
+| `beta` | The newest beta release (it stays on the last beta once stable releases exist) |
+| `latest` | The newest stable release (none yet) |
+
+The compose file names its release's exact version. To upgrade, [back up](#backup) first, then switch to the new release and restart (with `vX.Y.Z` the new release's tag):
+
+```bash
+git fetch --tags && git checkout vX.Y.Z
+docker compose pull && docker compose up -d
+```
+
+### Building from source
+
+To run your own changes, add a `docker-compose.override.yml` next to `docker-compose.yml` (Compose merges it automatically):
+
+```yaml
+services:
+  world-eats:
+    build: ./app
+    image: world-eats:local
+    pull_policy: build
+```
+
+`docker compose up -d` then builds the image from `./app` instead of pulling it.
 
 ## Country list
 
@@ -153,13 +184,17 @@ The script refuses any input whose SHA-256 isn't `3e458fc036ad0a66411f2c1e6cac49
 docker run --rm -v "$PWD":/src:ro -w /src python:3.12-slim python -m unittest discover -s tests -t . -v
 ```
 
-The same suite runs on GitHub Actions for every push and pull request (`.github/workflows/tests.yml`). It needs only Python 3.12; there are no dependencies to install.
+The same suite runs on GitHub Actions for every pull request and every change to `main` (`.github/workflows/tests.yml`). It needs only Python 3.12; there are no dependencies to install.
 
 ## Translations
 
 The app is in English only, but all of its interface text lives in one table, `app/static/strings-en.js`, so it can be translated without touching the code. Each entry has a fixed key; values are plain text, with placeholders such as `{max}` that must be kept as they are, and plurals written as a set of forms (`one` and `other` in English; other languages can add `zero`, `two`, `few` or `many`). Server errors come with a stable `code` (listed in `app/errors.py`), and the table has the text for each.
 
 Adding a language would mean copying the file, translating the values and setting `meta.lang`. Choosing between languages isn't built yet; `app.js` picks the table in one place (`STRINGS`). Country search and sorting stay in English for now.
+
+## Contributing
+
+Changes reach `main` only through pull requests, and a pull request can only be merged once the test suite passes. Releases are tags on `main` (`vX.Y.Z`, `vX.Y.Z-beta` or `vX.Y.Z-beta.N`); pushing one runs the tests again and publishes the image (`.github/workflows/release.yml`). A version that's already published is never overwritten.
 
 ## Future ideas
 
@@ -186,6 +221,7 @@ Ideas that might be explored one day. They're not commitments, and there's no ti
 - `app/Dockerfile` - the image (Python 3.12 slim, runs as a non-root user).
 - `tests/` - `unittest` suite (stdlib only).
 - `.github/workflows/tests.yml` - runs the test suite on GitHub Actions.
+- `.github/workflows/release.yml` - publishes the container image when a release tag is pushed.
 - `tools/build_map.py` - builds `app/static/map.json` from Natural Earth data (run by hand; not in the image).
 - Data: one SQLite database in `/data` inside the container, `./data` next to the compose file on the host (gitignored).
 

@@ -1,0 +1,120 @@
+name: Release image
+
+# Pushing a tag vX.Y.Z or vX.Y.Z-beta[.N] that points at a commit on main
+# runs the tests, then publishes a multi-platform image to ghcr.io tagged with
+# the exact version, plus "latest" (newest stable) or "beta" (newest beta).
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-image-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  tests:
+    uses: ./.github/workflows/tests.yml
+
+  image:
+    needs: tests
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check the tag and work out the image tags
+        id: version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          num='(0|[1-9][0-9]*)'
+          stable="^v$num\\.$num\\.$num\$"
+          beta="^v$num\\.$num\\.$num-beta(\\.$num)?\$"
+          if ! [[ "$TAG" =~ $stable || "$TAG" =~ $beta ]]; then
+            echo "::error::Tag $TAG isn't vX.Y.Z or vX.Y.Z-beta[.N]"
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::Tag $TAG points at a commit that isn't on main"
+            exit 1
+          fi
+          version="${TAG#v}"
+          image="ghcr.io/${GITHUB_REPOSITORY,,}"
+          if ! grep -qxF "    image: $image:$version" docker-compose.yml; then
+            echo "::error::docker-compose.yml doesn't reference $image:$version"
+            exit 1
+          fi
+          # The channel tag only moves if this is the newest release of its kind.
+          if [[ "$version" == *-beta* ]]; then
+            channel=beta
+            newest=$(git tag -l 'v*' | grep -E -- "$beta" | sort -V | tail -n 1)
+          else
+            channel=latest
+            newest=$(git tag -l 'v*' | grep -E -- "$stable" | sort -V | tail -n 1)
+          fi
+          if [[ "$newest" == "$TAG" ]]; then
+            move=true
+          else
+            move=false
+            echo "::warning::$TAG isn't the newest $channel release ($newest), so '$channel' isn't moved"
+          fi
+          {
+            echo "image=$image"
+            echo "version=$version"
+            echo "channel=$channel"
+            echo "move=$move"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Image metadata
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        env:
+          DOCKER_METADATA_ANNOTATIONS_LEVELS: manifest,index
+        with:
+          images: ${{ steps.version.outputs.image }}
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ steps.version.outputs.version }}
+            type=raw,value=${{ steps.version.outputs.channel }},enable=${{ steps.version.outputs.move }}
+
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+        with:
+          image: docker.io/tonistiigi/binfmt:qemu-v10.2.3@sha256:400a4873b838d1b89194d982c45e5fb3cda4593fbfd7e08a02e76b03b21166f0
+          platforms: arm64
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A published version is never overwritten.
+      - name: Check the version isn't published yet
+        env:
+          REF: ${{ steps.version.outputs.image }}:${{ steps.version.outputs.version }}
+        run: |
+          if docker buildx imagetools inspect "$REF" >/dev/null 2>&1; then
+            echo "::error::$REF is already published"
+            exit 1
+          fi
+
+      - name: Build and push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ./app
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          annotations: ${{ steps.meta.outputs.annotations }}
