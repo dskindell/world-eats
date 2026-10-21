@@ -5,9 +5,10 @@ from unittest import mock
 
 from tests.helpers import (PASSWORD, ServerTestCase, db, fast_hasher, passports, server, sha256_hex)
 
-NOT_FOUND = {"error": "Passport not found"}
+NOT_FOUND = {"error": "Passport not found", "code": "passport_not_found"}
 OWNER_ONLY = "Only the owner can do that"
-PENDING = {"error": "You must change your password first", "password_change_required": True}
+PENDING = {"error": "You must change your password first", "code": "password_change_required",
+           "password_change_required": True}
 PERSON_KEYS = {"id", "username", "display_name", "inactive"}
 SUMMARY_KEYS = {"id", "name", "is_personal", "role", "is_default", "owner"}
 DETAIL_PASSPORT_KEYS = SUMMARY_KEYS | {"created_at"}

@@ -21,15 +21,12 @@ MAX_TEXT = 100
 MAX_NOTES = 2000
 FIRST_DATE = datetime.date(1900, 1, 1)
 
+MIN_RATING, MAX_RATING = 1, 5
+
 DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
-DATE_MSG = "Choose a date between 1900 and today"
-DISH_LENGTH_MSG = '"What you ate" can be up to 100 characters'
-DISH_CHARS_MSG = '"What you ate" contains characters that aren\'t allowed'
-PLACE_LENGTH_MSG = '"Where" can be up to 100 characters'
-PLACE_CHARS_MSG = '"Where" contains characters that aren\'t allowed'
-RATING_MSG = "Stars must be 1 to 5"
-NOTES_LENGTH_MSG = "Notes can be up to 2,000 characters"
-NOTES_CHARS_MSG = "Notes contain characters that aren't allowed"
+DATE_PARAMS = {"year": FIRST_DATE.year}
+TEXT_PARAMS = {"max": MAX_TEXT}
+RATING_PARAMS = {"min": MIN_RATING, "max": MAX_RATING}
 
 
 # --- Validation (§5), in field order ---
@@ -37,44 +34,48 @@ NOTES_CHARS_MSG = "Notes contain characters that aren't allowed"
 def clean_date(value, now):
     """An ISO date string from 1900-01-01 to today (UTC, from the app clock) plus one day."""
     if type(value) is not str or DATE_RE.fullmatch(value) is None:
-        raise auth.Invalid(DATE_MSG)
+        raise auth.Invalid("date_range", DATE_PARAMS)
     try:
         date = datetime.date.fromisoformat(value)
     except ValueError:
-        raise auth.Invalid(DATE_MSG) from None
+        raise auth.Invalid("date_range", DATE_PARAMS) from None
     today = datetime.datetime.fromtimestamp(now, datetime.timezone.utc).date()
     if not FIRST_DATE <= date <= today + datetime.timedelta(days=1):
-        raise auth.Invalid(DATE_MSG)
+        raise auth.Invalid("date_range", DATE_PARAMS)
     return date.isoformat()
 
 
-def clean_text(value, limit, length_msg, chars_msg, allowed=(auth.ZERO_WIDTH_JOINER,)):
-    """Optional free text: missing or null is "", else NFC, trimmed, display-name character rules."""
+def clean_text(value, limit, length_error, chars_code, allowed=(auth.ZERO_WIDTH_JOINER,)):
+    """Optional free text: missing or null is "", else NFC, trimmed, display-name character rules.
+
+    length_error is the (code, params) for a value that's too long.
+    """
     if value is None:
         return ""
     if not isinstance(value, str):
-        raise auth.Invalid(length_msg)  # as auth.clean_display_name does for non-strings
+        raise auth.Invalid(*length_error)  # as auth.clean_display_name does for non-strings
     text = unicodedata.normalize("NFC", value).strip()
     if len(text) > limit:
-        raise auth.Invalid(length_msg)
+        raise auth.Invalid(*length_error)
     for ch in text:
         if ch not in allowed and unicodedata.category(ch) in auth.BLOCKED_CATEGORIES:
-            raise auth.Invalid(chars_msg)
+            raise auth.Invalid(chars_code)
     return text
 
 
 def clean_rating(value):
     if value is None:
         return None
-    if type(value) is not int or not 1 <= value <= 5:
-        raise auth.Invalid(RATING_MSG)
+    if type(value) is not int or not MIN_RATING <= value <= MAX_RATING:
+        raise auth.Invalid("rating_range", RATING_PARAMS)
     return value
 
 
 def clean_notes(value):
     if isinstance(value, str):
         value = value.replace("\r\n", "\n").replace("\r", "\n")
-    return clean_text(value, MAX_NOTES, NOTES_LENGTH_MSG, NOTES_CHARS_MSG,
+    # "2,000" is literal in the notes_length template (no param).
+    return clean_text(value, MAX_NOTES, ("notes_length", None), "notes_chars",
                       allowed=(auth.ZERO_WIDTH_JOINER, "\n"))
 
 
@@ -82,8 +83,8 @@ def clean_meal(body, now):
     """The five meal fields from a request body; nothing else is read."""
     return {
         "eaten_on": clean_date(body.get("eaten_on"), now),
-        "dish": clean_text(body.get("dish"), MAX_TEXT, DISH_LENGTH_MSG, DISH_CHARS_MSG),
-        "place": clean_text(body.get("place"), MAX_TEXT, PLACE_LENGTH_MSG, PLACE_CHARS_MSG),
+        "dish": clean_text(body.get("dish"), MAX_TEXT, ("dish_length", TEXT_PARAMS), "dish_chars"),
+        "place": clean_text(body.get("place"), MAX_TEXT, ("place_length", TEXT_PARAMS), "place_chars"),
         "rating": clean_rating(body.get("rating")),
         "notes": clean_notes(body.get("notes")),
     }
@@ -124,18 +125,21 @@ def meal_by_id(conn, meal_id):
 
 
 def limit_reached(conn, passport_id, user_id, code):
-    """The 409 message for the first limit the caller has reached, or None (counts only their meals)."""
+    """The 409 (error code, params) for the first limit the caller has reached, or None.
+
+    Counts only their meals. 5,000 and 20,000 are literal in their templates (no params).
+    """
     checks = (
         ("SELECT COUNT(*) FROM meals WHERE passport_id = ? AND user_id = ? AND country_code = ?",
-         (passport_id, user_id, code), MAX_PER_COUNTRY, "You can log at most 100 meals for one country"),
+         (passport_id, user_id, code), MAX_PER_COUNTRY, ("meal_limit_country", {"max": MAX_PER_COUNTRY})),
         ("SELECT COUNT(*) FROM meals WHERE passport_id = ? AND user_id = ?",
-         (passport_id, user_id), MAX_PER_PASSPORT, "You can log at most 5,000 meals in one passport"),
+         (passport_id, user_id), MAX_PER_PASSPORT, ("meal_limit_passport", None)),
         ("SELECT COUNT(*) FROM meals WHERE user_id = ?",
-         (user_id,), MAX_PER_ACCOUNT, "You can log at most 20,000 meals"),
+         (user_id,), MAX_PER_ACCOUNT, ("meal_limit_account", None)),
     )
-    for sql, params, limit, message in checks:
+    for sql, params, limit, error in checks:
         if conn.execute(sql, params).fetchone()[0] >= limit:
-            return message
+            return error
     return None
 
 

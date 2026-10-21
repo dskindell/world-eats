@@ -4,137 +4,138 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>World Eats</title>
+  <title data-i18n="app.title">World Eats</title>
   <!-- Empty data: icon stops the browser requesting /favicon.ico (not in the static map). -->
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="/style.css">
+  <script src="/strings-en.js" defer></script>
   <script src="/app.js" defer></script>
 </head>
 <body>
   <header class="topbar" id="topbar" hidden>
-    <a class="brand" href="#/">World Eats</a>
+    <a class="brand" href="#/" data-i18n="app.title">World Eats</a>
     <div class="menu-wrap">
       <button type="button" class="menu-button" id="menu-button" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu">
         <span class="menu-name" id="menu-name"></span>
         <span class="caret" aria-hidden="true">&#9662;</span>
       </button>
       <div class="menu" id="user-menu" role="menu" aria-labelledby="menu-button" hidden>
-        <a class="menu-item" role="menuitem" href="#/passports">Passports</a>
-        <a class="menu-item" role="menuitem" href="#/account">Account settings</a>
-        <a class="menu-item" role="menuitem" href="#/admin" id="menu-admin" hidden>Admin</a>
-        <button type="button" class="menu-item" role="menuitem" id="menu-logout">Log out</button>
+        <a class="menu-item" role="menuitem" href="#/passports" data-i18n="menu.passports">Passports</a>
+        <a class="menu-item" role="menuitem" href="#/account" data-i18n="menu.account">Account settings</a>
+        <a class="menu-item" role="menuitem" href="#/admin" id="menu-admin" hidden data-i18n="menu.admin">Admin</a>
+        <button type="button" class="menu-item" role="menuitem" id="menu-logout" data-i18n="menu.logout">Log out</button>
       </div>
     </div>
   </header>
 
   <main class="main">
     <section class="view" id="view-loading">
-      <p class="muted" id="loading-text">Loading&hellip;</p>
+      <p class="muted" id="loading-text" data-i18n="common.loading">Loading&hellip;</p>
       <p class="form-error" id="load-error" role="alert" hidden></p>
-      <button type="button" class="btn" id="load-retry" hidden>Try again</button>
+      <button type="button" class="btn" id="load-retry" hidden data-i18n="common.try_again">Try again</button>
     </section>
 
     <section class="view" id="view-setup" aria-labelledby="setup-title" hidden>
-      <h1 id="setup-title" tabindex="-1">Set up World Eats</h1>
-      <p class="muted">Create the first account. It will be an admin.</p>
+      <h1 id="setup-title" tabindex="-1" data-i18n="setup.title">Set up World Eats</h1>
+      <p class="muted" data-i18n="setup.intro">Create the first account. It will be an admin.</p>
       <form class="card stack" id="setup-form" method="post" novalidate>
         <div class="field">
-          <label for="setup-username">Username</label>
+          <label for="setup-username" data-i18n="field.username">Username</label>
           <input id="setup-username" name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" required aria-describedby="setup-username-hint">
-          <p class="hint" id="setup-username-hint">3-32 characters: letters, digits, . _ -</p>
+          <p class="hint" id="setup-username-hint" data-i18n="hint.username">3-32 characters: letters, digits, . _ -</p>
         </div>
         <div class="field">
-          <label for="setup-display-name">Display name</label>
+          <label for="setup-display-name" data-i18n="field.display_name">Display name</label>
           <input id="setup-display-name" name="display_name" type="text" required>
         </div>
         <div class="field">
-          <label for="setup-password">Password</label>
+          <label for="setup-password" data-i18n="field.password">Password</label>
           <input id="setup-password" name="password" type="password" autocomplete="new-password" required aria-describedby="setup-password-hint">
-          <p class="hint" id="setup-password-hint">12-128 characters</p>
+          <p class="hint" id="setup-password-hint" data-i18n="hint.password">12-128 characters</p>
         </div>
         <p class="form-error" role="alert" hidden></p>
-        <button type="submit" class="btn btn-primary">Create account</button>
+        <button type="submit" class="btn btn-primary" data-i18n="setup.submit">Create account</button>
       </form>
     </section>
 
     <section class="view" id="view-login" aria-labelledby="login-title" hidden>
-      <h1 id="login-title" tabindex="-1">Log in</h1>
+      <h1 id="login-title" tabindex="-1" data-i18n="login.title">Log in</h1>
       <form class="card stack" id="login-form" method="post" novalidate>
         <div class="field">
-          <label for="login-username">Username</label>
+          <label for="login-username" data-i18n="field.username">Username</label>
           <input id="login-username" name="username" type="text" autocomplete="username" autocapitalize="off" spellcheck="false" required>
         </div>
         <div class="field">
-          <label for="login-password">Password</label>
+          <label for="login-password" data-i18n="field.password">Password</label>
           <input id="login-password" name="password" type="password" autocomplete="current-password" required>
         </div>
         <p class="form-error" role="alert" hidden></p>
-        <button type="submit" class="btn btn-primary">Log in</button>
+        <button type="submit" class="btn btn-primary" data-i18n="login.submit">Log in</button>
       </form>
     </section>
 
     <section class="view" id="view-passports" aria-labelledby="passports-title" hidden>
       <div class="view-head">
-        <h1 id="passports-title" tabindex="-1">Passports</h1>
-        <button type="button" class="btn btn-primary" id="new-passport-open">New passport</button>
+        <h1 id="passports-title" tabindex="-1" data-i18n="menu.passports">Passports</h1>
+        <button type="button" class="btn btn-primary" id="new-passport-open" data-i18n="passports.new">New passport</button>
       </div>
       <ul class="card-list" id="passport-list" aria-labelledby="passports-title"></ul>
     </section>
 
     <section class="view view-wide" id="view-passport" aria-labelledby="passport-title" hidden>
-      <a class="back-link" href="#/passports">All passports</a>
+      <a class="back-link" href="#/passports" data-i18n="passport.back_all">All passports</a>
       <h1 id="passport-title" tabindex="-1"><a class="heading-link" href="#/passports" id="passport-name"></a></h1>
       <p class="muted" id="passport-owner"></p>
       <div class="default-row">
-        <span class="badge badge-accent" id="passport-default">Default</span>
-        <button type="button" class="btn" id="make-default">Make default</button>
+        <span class="badge badge-accent" id="passport-default" data-i18n="passport.default_badge">Default</span>
+        <button type="button" class="btn" id="make-default" data-i18n="passport.make_default">Make default</button>
       </div>
-      <button type="button" class="btn" id="people-open">People and settings</button>
+      <button type="button" class="btn" id="people-open" data-i18n="passport.people_open">People and settings</button>
 
       <section class="card" aria-labelledby="countries-title">
-        <h2 id="countries-title">Countries</h2>
+        <h2 id="countries-title" data-i18n="passport.countries_title">Countries</h2>
         <p class="muted" id="passport-progress"></p>
         <div class="browse-bar">
           <div class="field">
-            <label class="visually-hidden" for="browse-q">Search countries and meals</label>
-            <input id="browse-q" type="search" placeholder="Search countries and meals" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search">
+            <label class="visually-hidden" for="browse-q" data-i18n="browse.search_label">Search countries and meals</label>
+            <input id="browse-q" type="search" placeholder="Search countries and meals" data-i18n-placeholder="browse.search_label" autocomplete="off" autocapitalize="off" spellcheck="false" enterkeyhint="search">
             <p class="form-error browse-error" id="browse-error" role="alert" hidden></p>
           </div>
           <div class="browse-row">
             <div class="field browse-sort" id="browse-sort-field">
-              <label for="browse-sort">Sort</label>
+              <label for="browse-sort" data-i18n="browse.sort">Sort</label>
               <select id="browse-sort">
-                <option value="name">Name (A-Z)</option>
-                <option value="region">Region</option>
+                <option value="name" data-i18n="browse.sort_name">Name (A-Z)</option>
+                <option value="region" data-i18n="browse.sort_region">Region</option>
                 <option value="completed_desc" id="sort-completed-desc">Completed (newest)</option>
                 <option value="completed_asc" id="sort-completed-asc">Completed (oldest)</option>
-                <option value="rating">Rating</option>
-                <option value="progress">Progress</option>
+                <option value="rating" data-i18n="browse.sort_rating">Rating</option>
+                <option value="progress" data-i18n="browse.sort_progress">Progress</option>
               </select>
             </div>
             <div class="browse-actions">
               <button type="button" class="btn" id="filters-open" aria-haspopup="dialog">Filters</button>
-              <button type="button" class="btn btn-primary" id="pick-open" aria-haspopup="dialog" hidden>Pick a country</button>
+              <button type="button" class="btn btn-primary" id="pick-open" aria-haspopup="dialog" hidden data-i18n="pick.open">Pick a country</button>
             </div>
           </div>
-          <div class="view-switch" id="view-switch" role="group" aria-label="Show countries as">
-            <button type="button" class="btn" data-view="list" id="view-list" aria-pressed="true">List</button>
-            <button type="button" class="btn" data-view="map" id="view-map" aria-pressed="false">Map</button>
+          <div class="view-switch" id="view-switch" role="group" aria-label="Show countries as" data-i18n-aria-label="browse.view_switch_label">
+            <button type="button" class="btn" data-view="list" id="view-list" aria-pressed="true" data-i18n="browse.view_list">List</button>
+            <button type="button" class="btn" data-view="map" id="view-map" aria-pressed="false" data-i18n="browse.view_map">Map</button>
           </div>
         </div>
         <!-- "Nothing eligible" after Pick a country; empty (and not shown) otherwise. -->
         <p class="pick-empty" id="pick-empty" role="status"></p>
         <div class="browse-count" id="browse-count-row" hidden>
           <p id="browse-count" role="status" aria-live="polite"></p>
-          <button type="button" class="btn" id="browse-clear">Clear</button>
+          <button type="button" class="btn" id="browse-clear" data-i18n="browse.clear">Clear</button>
         </div>
-        <p class="muted" id="browse-empty" hidden>No countries match.</p>
+        <p class="muted" id="browse-empty" hidden data-i18n="browse.empty">No countries match.</p>
         <ul class="country-list" id="country-list" aria-labelledby="countries-title"></ul>
         <!-- Map view. app.js fills the SVG once per page load (paths and dots only)
              and colours it with classes; the card shows the tapped country. -->
         <div class="map-section" id="map-section" hidden>
           <p class="muted map-status" id="map-status" role="status"></p>
-          <button type="button" class="btn map-retry" id="map-retry" hidden>Try again</button>
+          <button type="button" class="btn map-retry" id="map-retry" hidden data-i18n="common.try_again">Try again</button>
           <div id="map-body" hidden>
             <div class="map-frame">
               <svg class="map-svg" id="map-svg" role="img" aria-label="World map"></svg>
@@ -143,19 +144,19 @@
                   <p class="map-card-name"><span class="flag" id="map-card-flag" aria-hidden="true"></span> <span id="map-card-name"></span></p>
                   <p class="map-card-status" id="map-card-status"></p>
                 </div>
-                <button type="button" class="btn btn-primary" id="map-card-open">Open</button>
+                <button type="button" class="btn btn-primary" id="map-card-open" data-i18n="map.card_open">Open</button>
               </div>
             </div>
             <div class="map-zoom">
-              <button type="button" class="btn" id="map-zoom-in" aria-label="Zoom in">+</button>
-              <button type="button" class="btn" id="map-zoom-out" aria-label="Zoom out">&minus;</button>
-              <button type="button" class="btn" id="map-reset" aria-label="Reset map">Reset</button>
+              <button type="button" class="btn" id="map-zoom-in" aria-label="Zoom in" data-i18n-aria-label="map.zoom_in">+</button>
+              <button type="button" class="btn" id="map-zoom-out" aria-label="Zoom out" data-i18n-aria-label="map.zoom_out">&minus;</button>
+              <button type="button" class="btn" id="map-reset" aria-label="Reset map" data-i18n-aria-label="map.reset_label" data-i18n="map.reset">Reset</button>
             </div>
             <ul class="map-legend" id="map-legend">
               <li><span class="legend-swatch status-none" aria-hidden="true"></span><span id="legend-none">Not started</span></li>
-              <li id="legend-your-turn"><span class="legend-swatch status-your-turn" aria-hidden="true"></span>Your turn</li>
-              <li id="legend-waiting"><span class="legend-swatch status-waiting" aria-hidden="true"></span>Waiting on others</li>
-              <li id="legend-some"><span class="legend-swatch status-some" aria-hidden="true"></span>Some</li>
+              <li id="legend-your-turn"><span class="legend-swatch status-your-turn" aria-hidden="true"></span><span data-i18n="status.your_turn">Your turn</span></li>
+              <li id="legend-waiting"><span class="legend-swatch status-waiting" aria-hidden="true"></span><span data-i18n="status.waiting">Waiting on others</span></li>
+              <li id="legend-some"><span class="legend-swatch status-some" aria-hidden="true"></span><span data-i18n="status.some">Some</span></li>
               <li><span class="legend-swatch status-complete" aria-hidden="true"></span><span id="legend-complete">Fully complete</span></li>
             </ul>
           </div>
@@ -165,30 +166,30 @@
 
     <section class="view" id="view-people" aria-labelledby="people-page-title" hidden>
       <a class="back-link" id="people-back" href="#/passports"></a>
-      <h1 id="people-page-title" tabindex="-1">People and settings</h1>
+      <h1 id="people-page-title" tabindex="-1" data-i18n="people.title">People and settings</h1>
 
       <section class="card stack" id="people-card" aria-labelledby="people-title">
         <div class="view-head">
-          <h2 id="people-title">People</h2>
-          <button type="button" class="btn" id="add-person-open">Add person</button>
+          <h2 id="people-title" data-i18n="people.people_title">People</h2>
+          <button type="button" class="btn" id="add-person-open" data-i18n="people.add">Add person</button>
         </div>
-        <h3 id="participants-title">Participants</h3>
+        <h3 id="participants-title" data-i18n="people.participants">Participants</h3>
         <ul class="people-list" id="participants-list" aria-labelledby="participants-title"></ul>
-        <h3 id="viewers-title">Viewers</h3>
+        <h3 id="viewers-title" data-i18n="people.viewers">Viewers</h3>
         <ul class="people-list" id="viewers-list" aria-labelledby="viewers-title"></ul>
-        <p class="muted" id="viewers-empty">No viewers</p>
-        <p class="hint" id="personal-note">Personal passports can have viewers but not participants.</p>
+        <p class="muted" id="viewers-empty" data-i18n="people.no_viewers">No viewers</p>
+        <p class="hint" id="personal-note" data-i18n="people.personal_note">Personal passports can have viewers but not participants.</p>
       </section>
 
       <section class="card" id="passport-manage" aria-labelledby="manage-title">
-        <h2 id="manage-title">Manage</h2>
-        <button type="button" class="btn" id="rename-open">Rename</button>
+        <h2 id="manage-title" data-i18n="people.manage">Manage</h2>
+        <button type="button" class="btn" id="rename-open" data-i18n="people.rename">Rename</button>
       </section>
 
       <section class="card card-danger" id="passport-danger" aria-labelledby="passport-danger-title">
-        <h2 id="passport-danger-title">Danger zone</h2>
-        <button type="button" class="btn btn-danger" id="delete-passport-open">Delete passport</button>
-        <button type="button" class="btn btn-danger" id="leave-open">Leave passport</button>
+        <h2 id="passport-danger-title" data-i18n="common.danger_zone">Danger zone</h2>
+        <button type="button" class="btn btn-danger" id="delete-passport-open" data-i18n="people.delete_passport">Delete passport</button>
+        <button type="button" class="btn btn-danger" id="leave-open" data-i18n="people.leave_passport">Leave passport</button>
       </section>
     </section>
 
@@ -202,238 +203,238 @@
       </div>
 
       <section class="card" id="country-people-card" aria-labelledby="country-people-title">
-        <h2 id="country-people-title">Participants</h2>
+        <h2 id="country-people-title" data-i18n="people.participants">Participants</h2>
         <ul class="people-list" id="country-participants" aria-labelledby="country-people-title"></ul>
       </section>
 
-      <button type="button" class="btn btn-primary" id="log-meal-open">Log a meal</button>
+      <button type="button" class="btn btn-primary" id="log-meal-open" data-i18n="countrypage.log_meal">Log a meal</button>
 
       <section aria-labelledby="meals-title">
-        <h2 id="meals-title" tabindex="-1">Meals</h2>
+        <h2 id="meals-title" tabindex="-1" data-i18n="countrypage.meals_title">Meals</h2>
         <ul class="card-list" id="meal-list" aria-labelledby="meals-title"></ul>
-        <p class="muted" id="meals-empty">No meals yet.</p>
+        <p class="muted" id="meals-empty" data-i18n="countrypage.no_meals">No meals yet.</p>
       </section>
     </section>
 
     <section class="view" id="view-account" aria-labelledby="account-title" hidden>
-      <h1 id="account-title" tabindex="-1">Account settings</h1>
+      <h1 id="account-title" tabindex="-1" data-i18n="account.title">Account settings</h1>
 
       <dl class="card info">
-        <dt>Username</dt>
+        <dt data-i18n="field.username">Username</dt>
         <dd id="account-username"></dd>
       </dl>
 
       <section class="card" aria-labelledby="name-title">
-        <h2 id="name-title">Display name</h2>
+        <h2 id="name-title" data-i18n="field.display_name">Display name</h2>
         <form class="stack" id="name-form" method="post" novalidate>
           <div class="field">
-            <label for="account-display-name">Display name</label>
+            <label for="account-display-name" data-i18n="field.display_name">Display name</label>
             <input id="account-display-name" name="display_name" type="text" required>
           </div>
           <p class="form-error" role="alert" hidden></p>
-          <button type="submit" class="btn btn-primary">Save</button>
+          <button type="submit" class="btn btn-primary" data-i18n="common.save">Save</button>
         </form>
       </section>
 
       <section class="card" aria-labelledby="default-title">
-        <h2 id="default-title">Default passport</h2>
+        <h2 id="default-title" data-i18n="account.default_title">Default passport</h2>
         <form class="stack" id="default-form" method="post" novalidate>
           <div class="field">
-            <label for="default-passport">Opens when you start World Eats</label>
+            <label for="default-passport" data-i18n="account.default_label">Opens when you start World Eats</label>
             <select id="default-passport" name="default_passport_id" disabled></select>
           </div>
           <p class="form-error" role="alert" hidden></p>
-          <button type="submit" class="btn btn-primary">Save</button>
+          <button type="submit" class="btn btn-primary" data-i18n="common.save">Save</button>
         </form>
       </section>
 
       <section class="card" aria-labelledby="password-title">
-        <h2 id="password-title">Change password</h2>
+        <h2 id="password-title" data-i18n="account.password_title">Change password</h2>
         <form class="stack" id="password-form" method="post" novalidate>
           <div class="field">
-            <label for="current-password">Current password</label>
+            <label for="current-password" data-i18n="field.current_password">Current password</label>
             <input id="current-password" name="current_password" type="password" autocomplete="current-password" required>
           </div>
           <div class="field">
-            <label for="new-password">New password</label>
+            <label for="new-password" data-i18n="field.new_password">New password</label>
             <input id="new-password" name="new_password" type="password" autocomplete="new-password" required aria-describedby="new-password-hint">
-            <p class="hint" id="new-password-hint">12-128 characters</p>
+            <p class="hint" id="new-password-hint" data-i18n="hint.password">12-128 characters</p>
           </div>
           <div class="field">
-            <label for="confirm-password">Confirm new password</label>
+            <label for="confirm-password" data-i18n="field.confirm_password">Confirm new password</label>
             <input id="confirm-password" name="confirm_password" type="password" autocomplete="new-password" required>
           </div>
           <p class="form-error" role="alert" hidden></p>
-          <button type="submit" class="btn btn-primary">Save</button>
+          <button type="submit" class="btn btn-primary" data-i18n="common.save">Save</button>
         </form>
       </section>
 
       <section class="card" aria-labelledby="sessions-title">
-        <h2 id="sessions-title">Sessions</h2>
-        <button type="button" class="btn" id="logout-all-open">Log out everywhere</button>
+        <h2 id="sessions-title" data-i18n="account.sessions_title">Sessions</h2>
+        <button type="button" class="btn" id="logout-all-open" data-i18n="account.logout_all">Log out everywhere</button>
       </section>
 
       <section class="card card-danger" aria-labelledby="danger-title">
-        <h2 id="danger-title">Danger zone</h2>
-        <button type="button" class="btn btn-danger" id="delete-open">Delete account</button>
+        <h2 id="danger-title" data-i18n="common.danger_zone">Danger zone</h2>
+        <button type="button" class="btn btn-danger" id="delete-open" data-i18n="account.delete">Delete account</button>
       </section>
     </section>
 
     <section class="view" id="view-force-password" aria-labelledby="force-title" hidden>
-      <h1 id="force-title" tabindex="-1">Choose a new password</h1>
-      <p class="muted">Your password was set by an admin. Choose a new one to continue.</p>
+      <h1 id="force-title" tabindex="-1" data-i18n="force.title">Choose a new password</h1>
+      <p class="muted" data-i18n="force.intro">Your password was set by an admin. Choose a new one to continue.</p>
       <form class="card stack" id="force-password-form" method="post" novalidate>
         <div class="field">
-          <label for="force-current">Temporary password</label>
+          <label for="force-current" data-i18n="field.temp_password">Temporary password</label>
           <input id="force-current" name="current_password" type="password" autocomplete="current-password" required>
         </div>
         <div class="field">
-          <label for="force-new">New password</label>
+          <label for="force-new" data-i18n="field.new_password">New password</label>
           <input id="force-new" name="new_password" type="password" autocomplete="new-password" required aria-describedby="force-new-hint">
-          <p class="hint" id="force-new-hint">12-128 characters</p>
+          <p class="hint" id="force-new-hint" data-i18n="hint.password">12-128 characters</p>
         </div>
         <div class="field">
-          <label for="force-confirm">Confirm new password</label>
+          <label for="force-confirm" data-i18n="field.confirm_password">Confirm new password</label>
           <input id="force-confirm" name="confirm_password" type="password" autocomplete="new-password" required>
         </div>
         <p class="form-error" role="alert" hidden></p>
-        <button type="submit" class="btn btn-primary">Save</button>
+        <button type="submit" class="btn btn-primary" data-i18n="common.save">Save</button>
       </form>
-      <button type="button" class="btn" id="force-logout">Log out</button>
+      <button type="button" class="btn" id="force-logout" data-i18n="menu.logout">Log out</button>
     </section>
 
     <section class="view" id="view-admin" aria-labelledby="admin-title" hidden>
       <div class="view-head">
-        <h1 id="admin-title" tabindex="-1">Admin</h1>
-        <button type="button" class="btn btn-primary" id="add-user-open">Add user</button>
+        <h1 id="admin-title" tabindex="-1" data-i18n="admin.title">Admin</h1>
+        <button type="button" class="btn btn-primary" id="add-user-open" data-i18n="admin.add_user">Add user</button>
       </div>
       <ul class="card-list" id="admin-users" aria-labelledby="admin-title"></ul>
     </section>
 
     <section class="view" id="view-admin-user" aria-labelledby="admin-user-title" hidden>
-      <a class="back-link" href="#/admin">All users</a>
+      <a class="back-link" href="#/admin" data-i18n="admin.back_all">All users</a>
       <h1 id="admin-user-title" tabindex="-1"></h1>
       <dl class="card info details">
-        <div><dt>Username</dt><dd id="au-username"></dd></div>
-        <div><dt>Role</dt><dd id="au-role"></dd></div>
-        <div><dt>Status</dt><dd id="au-status"></dd></div>
-        <div><dt>Locked out</dt><dd id="au-locked"></dd></div>
-        <div><dt>Must change password</dt><dd id="au-must-change"></dd></div>
-        <div><dt>Created</dt><dd id="au-created"></dd></div>
-        <div><dt>Last active</dt><dd id="au-last-active"></dd></div>
+        <div><dt data-i18n="field.username">Username</dt><dd id="au-username"></dd></div>
+        <div><dt data-i18n="admin.role">Role</dt><dd id="au-role"></dd></div>
+        <div><dt data-i18n="admin.status">Status</dt><dd id="au-status"></dd></div>
+        <div><dt data-i18n="admin.locked">Locked out</dt><dd id="au-locked"></dd></div>
+        <div><dt data-i18n="admin.must_change">Must change password</dt><dd id="au-must-change"></dd></div>
+        <div><dt data-i18n="admin.created">Created</dt><dd id="au-created"></dd></div>
+        <div><dt data-i18n="admin.last_active">Last active</dt><dd id="au-last-active"></dd></div>
       </dl>
 
       <section class="card" aria-labelledby="au-actions-title">
-        <h2 id="au-actions-title">Actions</h2>
+        <h2 id="au-actions-title" data-i18n="admin.actions">Actions</h2>
         <div class="action-list">
-          <button type="button" class="btn" id="au-edit-name">Edit display name</button>
-          <button type="button" class="btn" id="au-reset">Reset password</button>
-          <p class="self-note" id="au-reset-self"><a href="#/account">Change your own password in Account settings</a></p>
-          <button type="button" class="btn" id="au-unlock">Unlock</button>
-          <button type="button" class="btn" id="au-disable">Disable</button>
-          <button type="button" class="btn" id="au-enable">Enable</button>
-          <button type="button" class="btn" id="au-promote">Make admin</button>
-          <button type="button" class="btn" id="au-demote">Remove admin</button>
+          <button type="button" class="btn" id="au-edit-name" data-i18n="admin.edit_name">Edit display name</button>
+          <button type="button" class="btn" id="au-reset" data-i18n="admin.reset_password">Reset password</button>
+          <p class="self-note" id="au-reset-self"><a href="#/account" data-i18n="admin.reset_self">Change your own password in Account settings</a></p>
+          <button type="button" class="btn" id="au-unlock" data-i18n="admin.unlock">Unlock</button>
+          <button type="button" class="btn" id="au-disable" data-i18n="admin.disable">Disable</button>
+          <button type="button" class="btn" id="au-enable" data-i18n="admin.enable">Enable</button>
+          <button type="button" class="btn" id="au-promote" data-i18n="admin.promote">Make admin</button>
+          <button type="button" class="btn" id="au-demote" data-i18n="admin.demote">Remove admin</button>
         </div>
       </section>
 
       <section class="card card-danger" aria-labelledby="au-danger-title">
-        <h2 id="au-danger-title">Danger zone</h2>
-        <button type="button" class="btn btn-danger" id="au-delete">Delete account</button>
-        <p class="self-note" id="au-delete-self"><a href="#/account">Delete your own account in Account settings</a></p>
+        <h2 id="au-danger-title" data-i18n="common.danger_zone">Danger zone</h2>
+        <button type="button" class="btn btn-danger" id="au-delete" data-i18n="account.delete">Delete account</button>
+        <p class="self-note" id="au-delete-self"><a href="#/account" data-i18n="admin.delete_self">Delete your own account in Account settings</a></p>
       </section>
     </section>
   </main>
 
   <dialog class="dialog" id="logout-all-dialog" aria-labelledby="logout-all-title">
     <form class="stack" id="logout-all-form" method="post" novalidate>
-      <h2 id="logout-all-title">Log out everywhere</h2>
-      <p>Log out of World Eats on all devices, including this one?</p>
+      <h2 id="logout-all-title" data-i18n="account.logout_all">Log out everywhere</h2>
+      <p data-i18n="account.logout_all_text">Log out of World Eats on all devices, including this one?</p>
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-primary">Log out everywhere</button>
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" data-i18n="account.logout_all">Log out everywhere</button>
       </div>
     </form>
   </dialog>
 
   <dialog class="dialog" id="delete-dialog" aria-labelledby="delete-title">
     <form class="stack" id="delete-form" method="post" novalidate>
-      <h2 id="delete-title">Delete account</h2>
-      <p>This permanently deletes your account. This can't be undone.</p>
+      <h2 id="delete-title" data-i18n="account.delete">Delete account</h2>
+      <p data-i18n="account.delete_text">This permanently deletes your account. This can't be undone.</p>
       <div class="preview" id="delete-preview" aria-live="polite"></div>
       <div class="field">
-        <label for="delete-password">Password</label>
+        <label for="delete-password" data-i18n="field.password">Password</label>
         <input id="delete-password" name="password" type="password" autocomplete="current-password" required>
       </div>
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-danger" id="delete-submit">Delete my account</button>
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
+        <button type="submit" class="btn btn-danger" id="delete-submit" data-i18n="account.delete_submit">Delete my account</button>
       </div>
     </form>
   </dialog>
 
   <dialog class="dialog" id="add-user-dialog" aria-labelledby="add-user-title">
     <form class="stack" id="add-user-form" method="post" novalidate>
-      <h2 id="add-user-title">Add user</h2>
+      <h2 id="add-user-title" data-i18n="admin.add_user">Add user</h2>
       <div class="field">
-        <label for="add-username">Username</label>
+        <label for="add-username" data-i18n="field.username">Username</label>
         <input id="add-username" name="username" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" required aria-describedby="add-username-hint">
-        <p class="hint" id="add-username-hint">3-32 characters: letters, digits, . _ -</p>
+        <p class="hint" id="add-username-hint" data-i18n="hint.username">3-32 characters: letters, digits, . _ -</p>
       </div>
       <div class="field">
-        <label for="add-display-name">Display name</label>
+        <label for="add-display-name" data-i18n="field.display_name">Display name</label>
         <input id="add-display-name" name="display_name" type="text" required>
       </div>
       <div class="field">
-        <label for="add-password">Temporary password</label>
+        <label for="add-password" data-i18n="field.temp_password">Temporary password</label>
         <div class="input-row">
           <input id="add-password" name="password" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" required aria-describedby="add-password-hint">
-          <button type="button" class="btn" data-generate="add-password">Generate</button>
+          <button type="button" class="btn" data-generate="add-password" data-i18n="admin.generate">Generate</button>
         </div>
-        <p class="hint" id="add-password-hint">12-128 characters. They'll be asked to change it when they log in. It expires after 7 days.</p>
+        <p class="hint" id="add-password-hint" data-i18n="admin.temp_hint">12-128 characters. They'll be asked to change it when they log in. It expires after 7 days.</p>
       </div>
-      <label class="check"><input type="checkbox" name="is_admin"> Admin</label>
+      <label class="check"><input type="checkbox" name="is_admin"> <span data-i18n="admin.is_admin">Admin</span></label>
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-primary">Create user</button>
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" data-i18n="admin.create_user">Create user</button>
       </div>
     </form>
   </dialog>
 
   <dialog class="dialog" id="edit-name-dialog" aria-labelledby="edit-name-title">
     <form class="stack" id="edit-name-form" method="post" novalidate>
-      <h2 id="edit-name-title">Edit display name</h2>
+      <h2 id="edit-name-title" data-i18n="admin.edit_name">Edit display name</h2>
       <div class="field">
-        <label for="edit-display-name">Display name</label>
+        <label for="edit-display-name" data-i18n="field.display_name">Display name</label>
         <input id="edit-display-name" name="display_name" type="text" required>
       </div>
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-primary">Save</button>
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" data-i18n="common.save">Save</button>
       </div>
     </form>
   </dialog>
 
   <dialog class="dialog" id="reset-dialog" aria-labelledby="reset-title">
     <form class="stack" id="reset-form" method="post" novalidate>
-      <h2 id="reset-title">Reset password</h2>
+      <h2 id="reset-title" data-i18n="admin.reset_password">Reset password</h2>
       <p id="reset-text"></p>
       <div class="field">
-        <label for="reset-password">Temporary password</label>
+        <label for="reset-password" data-i18n="field.temp_password">Temporary password</label>
         <div class="input-row">
           <input id="reset-password" name="new_password" type="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" required aria-describedby="reset-password-hint">
-          <button type="button" class="btn" data-generate="reset-password">Generate</button>
+          <button type="button" class="btn" data-generate="reset-password" data-i18n="admin.generate">Generate</button>
         </div>
-        <p class="hint" id="reset-password-hint">12-128 characters</p>
+        <p class="hint" id="reset-password-hint" data-i18n="hint.password">12-128 characters</p>
       </div>
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-primary">Reset password</button>
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" data-i18n="admin.reset_password">Reset password</button>
       </div>
     </form>
   </dialog>
@@ -445,7 +446,7 @@
       <p id="confirm-text"></p>
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
         <button type="submit" class="btn btn-primary" id="confirm-submit"></button>
       </div>
     </form>
@@ -453,7 +454,7 @@
 
   <dialog class="dialog" id="admin-delete-dialog" aria-labelledby="admin-delete-title">
     <form class="stack" id="admin-delete-form" method="post" novalidate>
-      <h2 id="admin-delete-title">Delete account</h2>
+      <h2 id="admin-delete-title" data-i18n="account.delete">Delete account</h2>
       <p id="admin-delete-text"></p>
       <div class="field">
         <label for="admin-delete-confirm" id="admin-delete-label"></label>
@@ -461,81 +462,81 @@
       </div>
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-danger" id="admin-delete-submit" disabled>Delete account</button>
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
+        <button type="submit" class="btn btn-danger" id="admin-delete-submit" disabled data-i18n="account.delete">Delete account</button>
       </div>
     </form>
   </dialog>
 
   <dialog class="dialog" id="new-passport-dialog" aria-labelledby="new-passport-title">
     <form class="stack" id="new-passport-form" method="post" novalidate>
-      <h2 id="new-passport-title">New passport</h2>
+      <h2 id="new-passport-title" data-i18n="passports.new">New passport</h2>
       <div class="field">
-        <label for="new-passport-name">Name</label>
+        <label for="new-passport-name" data-i18n="field.name">Name</label>
         <input id="new-passport-name" name="name" type="text" autocomplete="off" required>
       </div>
       <fieldset class="group">
-        <legend>People</legend>
-        <p class="hint" id="new-passport-hint">Up to 19 people. You're the owner and always a participant.</p>
+        <legend data-i18n="people.people_title">People</legend>
+        <p class="hint" id="new-passport-hint" data-i18n="passports.new_hint">Up to 19 people. You're the owner and always a participant.</p>
         <p class="muted" id="new-passport-status"></p>
         <ul class="pick-list" id="new-passport-people"></ul>
       </fieldset>
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-primary">Create</button>
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" data-i18n="passports.create">Create</button>
       </div>
     </form>
   </dialog>
 
   <dialog class="dialog" id="add-person-dialog" aria-labelledby="add-person-title">
     <form class="stack" id="add-person-form" method="post" novalidate>
-      <h2 id="add-person-title">Add person</h2>
+      <h2 id="add-person-title" data-i18n="people.add">Add person</h2>
       <p class="muted" id="add-person-status"></p>
       <div class="field" id="add-person-fields">
-        <label for="add-person-user">Person</label>
+        <label for="add-person-user" data-i18n="people.person">Person</label>
         <select id="add-person-user" name="user_id"></select>
       </div>
       <fieldset class="group" id="add-person-roles">
-        <legend>Role</legend>
-        <label class="check"><input type="radio" name="role" value="participant" id="add-person-participant"> Participant</label>
-        <label class="check"><input type="radio" name="role" value="viewer" id="add-person-viewer"> Viewer</label>
+        <legend data-i18n="admin.role">Role</legend>
+        <label class="check"><input type="radio" name="role" value="participant" id="add-person-participant"> <span data-i18n="role.participant">Participant</span></label>
+        <label class="check"><input type="radio" name="role" value="viewer" id="add-person-viewer"> <span data-i18n="role.viewer">Viewer</span></label>
       </fieldset>
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-primary" id="add-person-submit">Add</button>
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" id="add-person-submit" data-i18n="people.add_submit">Add</button>
       </div>
     </form>
   </dialog>
 
   <dialog class="dialog" id="rename-dialog" aria-labelledby="rename-title">
     <form class="stack" id="rename-form" method="post" novalidate>
-      <h2 id="rename-title">Rename passport</h2>
+      <h2 id="rename-title" data-i18n="people.rename_title">Rename passport</h2>
       <div class="field">
-        <label for="rename-name">Name</label>
+        <label for="rename-name" data-i18n="field.name">Name</label>
         <input id="rename-name" name="name" type="text" autocomplete="off" required>
       </div>
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-primary">Save</button>
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" data-i18n="common.save">Save</button>
       </div>
     </form>
   </dialog>
 
   <dialog class="dialog" id="delete-passport-dialog" aria-labelledby="delete-passport-title">
     <form class="stack" id="delete-passport-form" method="post" novalidate>
-      <h2 id="delete-passport-title">Delete passport</h2>
+      <h2 id="delete-passport-title" data-i18n="people.delete_passport">Delete passport</h2>
       <p id="delete-passport-text"></p>
       <div class="field">
-        <label for="delete-passport-confirm">Type the passport name to confirm</label>
+        <label for="delete-passport-confirm" data-i18n="people.delete_confirm_label">Type the passport name to confirm</label>
         <input id="delete-passport-confirm" name="confirm_name" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" required>
       </div>
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-danger" id="delete-passport-submit" disabled>Delete</button>
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
+        <button type="submit" class="btn btn-danger" id="delete-passport-submit" disabled data-i18n="common.delete">Delete</button>
       </div>
     </form>
   </dialog>
@@ -547,7 +548,7 @@
       <p id="passport-confirm-text"></p>
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
         <button type="submit" class="btn btn-danger" id="passport-confirm-submit"></button>
       </div>
     </form>
@@ -558,21 +559,21 @@
     <form class="stack" id="meal-form" method="post" novalidate>
       <h2 id="meal-title"></h2>
       <div class="field">
-        <label for="meal-date">Date</label>
+        <label for="meal-date" data-i18n="meal.date">Date</label>
         <input id="meal-date" name="eaten_on" type="date" min="1900-01-01" required>
       </div>
       <div class="field">
-        <label for="meal-dish">What you ate</label>
+        <label for="meal-dish" data-i18n="meal.dish">What you ate</label>
         <input id="meal-dish" name="dish" type="text" autocomplete="off">
       </div>
       <div class="field">
-        <label for="meal-place">Where</label>
-        <input id="meal-place" name="place" type="text" autocomplete="off" placeholder="Restaurant name, or home">
+        <label for="meal-place" data-i18n="meal.place">Where</label>
+        <input id="meal-place" name="place" type="text" autocomplete="off" placeholder="Restaurant name, or home" data-i18n-placeholder="meal.place_placeholder">
       </div>
       <fieldset class="group">
-        <legend>Stars</legend>
+        <legend data-i18n="meal.stars">Stars</legend>
         <div class="star-choices">
-          <label class="check"><input type="radio" name="rating" value="none" checked> None</label>
+          <label class="check"><input type="radio" name="rating" value="none" checked> <span data-i18n="meal.stars_none">None</span></label>
           <label class="check"><input type="radio" name="rating" value="1"> 1</label>
           <label class="check"><input type="radio" name="rating" value="2"> 2</label>
           <label class="check"><input type="radio" name="rating" value="3"> 3</label>
@@ -581,26 +582,26 @@
         </div>
       </fieldset>
       <div class="field">
-        <label for="meal-notes">Notes</label>
+        <label for="meal-notes" data-i18n="meal.notes">Notes</label>
         <textarea id="meal-notes" name="notes" rows="4"></textarea>
       </div>
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-primary">Save</button>
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" data-i18n="common.save">Save</button>
       </div>
     </form>
   </dialog>
 
   <dialog class="dialog" id="delete-meal-dialog" aria-labelledby="delete-meal-title">
     <form class="stack" id="delete-meal-form" method="post" novalidate>
-      <h2 id="delete-meal-title">Delete meal</h2>
+      <h2 id="delete-meal-title" data-i18n="meal.delete_title">Delete meal</h2>
       <p id="delete-meal-text"></p>
       <p id="delete-meal-last"></p>
       <p class="form-error" role="alert" hidden></p>
       <div class="actions">
-        <button type="button" class="btn" data-close>Cancel</button>
-        <button type="submit" class="btn btn-danger">Delete meal</button>
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
+        <button type="submit" class="btn btn-danger" data-i18n="meal.delete_title">Delete meal</button>
       </div>
     </form>
   </dialog>
@@ -609,29 +610,29 @@
        and adapts the status labels and Mine group to the passport. -->
   <dialog class="dialog" id="filters-dialog" aria-labelledby="filters-title">
     <form class="stack" id="filters-form" method="post" novalidate>
-      <h2 id="filters-title">Filters</h2>
+      <h2 id="filters-title" data-i18n="browse.filters">Filters</h2>
       <fieldset class="group">
-        <legend>Status</legend>
+        <legend data-i18n="admin.status">Status</legend>
         <label class="check"><input type="checkbox" name="status" value="not_started"> <span id="filter-status-none">Not started</span></label>
-        <label class="check"><input type="checkbox" name="status" value="your_turn"> Your turn</label>
-        <label class="check"><input type="checkbox" name="status" value="waiting"> Waiting on others</label>
-        <label class="check"><input type="checkbox" name="status" value="some"> Some</label>
+        <label class="check"><input type="checkbox" name="status" value="your_turn"> <span data-i18n="status.your_turn">Your turn</span></label>
+        <label class="check"><input type="checkbox" name="status" value="waiting"> <span data-i18n="status.waiting">Waiting on others</span></label>
+        <label class="check"><input type="checkbox" name="status" value="some"> <span data-i18n="status.some">Some</span></label>
         <label class="check"><input type="checkbox" name="status" value="complete"> <span id="filter-status-complete">Fully complete</span></label>
       </fieldset>
       <fieldset class="group" id="filters-mine">
-        <legend>Mine</legend>
-        <label class="check"><input type="radio" name="mine" value="" checked> Any</label>
-        <label class="check"><input type="radio" name="mine" value="done"> Done by me</label>
-        <label class="check"><input type="radio" name="mine" value="not_done"> Not done by me</label>
+        <legend data-i18n="filters.mine">Mine</legend>
+        <label class="check"><input type="radio" name="mine" value="" checked> <span data-i18n="filters.any">Any</span></label>
+        <label class="check"><input type="radio" name="mine" value="done"> <span data-i18n="filters.mine_done">Done by me</span></label>
+        <label class="check"><input type="radio" name="mine" value="not_done"> <span data-i18n="filters.mine_not_done">Not done by me</span></label>
       </fieldset>
       <fieldset class="group" id="filters-region-group">
-        <legend>Region</legend>
+        <legend data-i18n="browse.sort_region">Region</legend>
         <div id="filters-regions"></div>
       </fieldset>
       <div class="field">
-        <label for="filters-stars">Minimum stars</label>
+        <label for="filters-stars" data-i18n="filters.min_stars">Minimum stars</label>
         <select id="filters-stars" name="stars">
-          <option value="">Any</option>
+          <option value="" data-i18n="filters.any">Any</option>
           <option value="1">1+</option>
           <option value="2">2+</option>
           <option value="3">3+</option>
@@ -640,29 +641,29 @@
         </select>
       </div>
       <div class="actions">
-        <button type="button" class="btn" id="filters-clear">Clear filters</button>
-        <button type="submit" class="btn btn-primary">Done</button>
+        <button type="button" class="btn" id="filters-clear" data-i18n="filters.clear">Clear filters</button>
+        <button type="submit" class="btn btn-primary" data-i18n="filters.done">Done</button>
       </div>
     </form>
   </dialog>
 
   <!-- Random pick: a split-flap board. app.js builds the tiles and enables the
        result buttons once the name has settled. Not a form (nothing to submit). -->
-  <dialog class="dialog pick-dialog" id="pick-dialog" aria-label="Random pick">
+  <dialog class="dialog pick-dialog" id="pick-dialog" aria-label="Random pick" data-i18n-aria-label="pick.dialog_label">
     <div class="stack">
       <div class="pick-head">
-        <p class="pick-lead">Next stop:</p>
-        <button type="button" class="btn" id="pick-close">Close</button>
+        <p class="pick-lead" data-i18n="pick.lead">Next stop:</p>
+        <button type="button" class="btn" id="pick-close" data-i18n="common.close">Close</button>
       </div>
-      <button type="button" class="pick-board" id="pick-board" aria-label="Skip animation" autofocus>
+      <button type="button" class="pick-board" id="pick-board" aria-label="Skip animation" data-i18n-aria-label="pick.skip" autofocus>
         <span class="pick-tiles" id="pick-tiles" aria-hidden="true"></span>
       </button>
       <p class="pick-place" id="pick-place"><span class="flag" id="pick-flag" aria-hidden="true"></span><span id="pick-region"></span></p>
       <p class="visually-hidden" id="pick-live" aria-live="polite"></p>
       <div class="actions pick-actions" id="pick-actions">
-        <button type="button" class="btn btn-primary" id="pick-log" disabled>Log a meal</button>
-        <button type="button" class="btn" id="pick-country" disabled>Open country</button>
-        <button type="button" class="btn" id="pick-again" disabled>Pick again</button>
+        <button type="button" class="btn btn-primary" id="pick-log" disabled data-i18n="countrypage.log_meal">Log a meal</button>
+        <button type="button" class="btn" id="pick-country" disabled data-i18n="pick.open_country">Open country</button>
+        <button type="button" class="btn" id="pick-again" disabled data-i18n="pick.again">Pick again</button>
       </div>
     </div>
   </dialog>

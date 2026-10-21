@@ -24,10 +24,6 @@ DISH_CAP, PLACE_CAP, NOTES_CAP = 200, 200, 4000
 EXCERPT = 80
 PROGRESS_STEPS = 10000
 
-EMPTY_MSG = "Type something to search"
-LENGTH_MSG = "Search can be up to 200 characters"
-TERM_MSG = "Search words can be up to 50 characters"
-
 # Letters with no accent to drop; applied after casefold, so upper-case forms are covered.
 LETTERS = str.maketrans({"ø": "o", "ł": "l", "đ": "d", "ð": "d", "þ": "th", "æ": "ae", "œ": "oe", "ı": "i"})
 
@@ -51,17 +47,17 @@ FOLDED_NAMES = tuple((c.code, tuple(fold(n) for n in (c.name, *c.aliases))) for 
 def clean_query(value):
     """The search terms from body["q"], validated in the contract's order; no database."""
     if not isinstance(value, str) or auth.has_surrogate(value):
-        raise auth.Invalid(EMPTY_MSG)
+        raise auth.Invalid("search_empty")
     if len(value) > MAX_QUERY:
-        raise auth.Invalid(LENGTH_MSG)
+        raise auth.Invalid("search_length", {"max": MAX_QUERY})
     folded = fold(value)
     if len(folded) > MAX_QUERY:
-        raise auth.Invalid(LENGTH_MSG)
+        raise auth.Invalid("search_length", {"max": MAX_QUERY})
     terms = list(dict.fromkeys(t for t in folded.split(" ") if t))[:MAX_TERMS]
     if any(len(t) > MAX_TERM for t in terms):
-        raise auth.Invalid(TERM_MSG)
+        raise auth.Invalid("search_term_length", {"max": MAX_TERM})
     if not terms:
-        raise auth.Invalid(EMPTY_MSG)
+        raise auth.Invalid("search_empty")
     return terms
 
 

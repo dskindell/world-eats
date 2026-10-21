@@ -13,7 +13,8 @@ WEEK = 604800
 LOCKED = "Too many failed attempts. Try again in a few minutes."
 ADMIN_KEYS = {"id", "username", "display_name", "is_admin", "disabled", "locked", "must_change_password",
               "temp_password_expired", "created_at", "last_active_at"}
-PENDING = {"error": "You must change your password first", "password_change_required": True}
+PENDING = {"error": "You must change your password first", "code": "password_change_required",
+           "password_change_required": True}
 
 # Every admin endpoint, with a body that would succeed for user 2 ("bob").
 ENDPOINTS = [
@@ -152,7 +153,7 @@ class AuthorizationTests(AdminTestCase):
                 with self.subTest(method=method, path=path):
                     resp = self.admin(method, path, body, token=self.bob)
                     self.assertEqual(resp.status, 403)
-                    self.assertEqual(resp.json(), {"error": "Admins only"})
+                    self.assertEqual(resp.json(), {"error": "Admins only", "code": "admins_only"})
         self.assertEqual(self.user_count(), 2)
         self.assertEqual(self.row(1)["is_admin"], 1)
 

@@ -15,9 +15,12 @@ Patterns for later features:
   the dispatcher checks, in order: no session -> 401; must_change_password and
   not allow_pending -> 403; admin=True and not an admin -> 403. The handler can
   rely on req.user.
-- Raise ApiError(status, message) for any client-facing error; it becomes
-  JSON {"error": message}. Field validators in auth raise auth.Invalid(message),
-  which becomes a 400; call them in the contract's field order.
+- Raise ApiError(status, code, params) for any client-facing error, with a code
+  from errors.MESSAGES (contract 10 §5); it becomes JSON {"error": <English>,
+  "code": code, "params": {...}} (params only when the template has any, ints
+  from server constants only). Field validators in auth raise
+  auth.Invalid(code, params), which becomes a 400; call them in the contract's
+  field order. No exception's str() is ever sent to the client.
 - Admin writes call require_admin() first inside their write transaction (the
   admin may have been demoted, disabled or logged out since the session loaded).
 - One SQLite connection per request (req.db()). Only top-level handlers open a
@@ -66,6 +69,7 @@ from typing import Callable, NamedTuple
 import auth
 import countries
 import db
+import errors
 import meals
 import passports
 import search
@@ -76,6 +80,7 @@ STATIC_FILES = {
     "/": ("index.html", "text/html; charset=utf-8"),
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/strings-en.js": ("strings-en.js", "text/javascript; charset=utf-8"),
     "/style.css": ("style.css", "text/css; charset=utf-8"),
     "/map.json": ("map.json", "application/json; charset=utf-8"),
 }
@@ -109,24 +114,23 @@ SEARCH_SLOTS = 4  # searches running at once
 SEARCH_WAIT = 1  # seconds to wait for a search slot
 SEARCH_BUDGET = 5  # seconds of query time per search
 
-# Generic texts for errors from the stdlib's parse_request() (its own messages can
-# echo the request) and for our own send_error() calls.
+# Generic error codes for errors from the stdlib's parse_request() (its own messages
+# can echo the request) and for our own send_error() calls; anything else is bad_request.
 STDLIB_ERRORS = {
-    400: "Bad request",
-    431: "Request headers too large",
-    505: "HTTP version not supported",
+    400: "bad_request",
+    431: "headers_too_large",
+    505: "http_version",
 }
-
-LOCKED_MSG = "Too many failed attempts. Try again in a few minutes."
-BUSY_MSG = "Server busy, try again"
 
 
 class ApiError(Exception):
-    def __init__(self, status, message, extra=None):
-        super().__init__(message)
+    """A client-facing error: status, a code from errors.MESSAGES, its int params, extra body fields."""
+
+    def __init__(self, status, code, params=None, extra=None):
+        self.body = errors.body(code, params, extra)
+        super().__init__(self.body["error"])
         self.status = status
-        self.message = message
-        self.extra = extra or {}
+        self.code = code
 
 
 class _CloseConnection(Exception):
@@ -158,7 +162,7 @@ def temp_password_expired(row, now):
 def require_live_session(req, conn):
     """Inside a write transaction: 401 if this request's session was revoked meanwhile."""
     if conn.execute("SELECT 1 FROM sessions WHERE id = ?", (req.session_id,)).fetchone() is None:
-        raise ApiError(401, "Not logged in")
+        raise ApiError(401, "not_logged_in")
 
 
 def require_admin(req, conn):
@@ -172,9 +176,9 @@ def require_admin(req, conn):
         "WHERE sessions.id = ? AND sessions.expires_at > ?",
         (req.session_id, req.app.now())).fetchone()
     if row is None:
-        raise ApiError(401, "Not logged in")
+        raise ApiError(401, "not_logged_in")
     if not is_usable_admin(row):
-        raise ApiError(403, "Admins only")
+        raise ApiError(403, "admins_only")
 
 
 def is_usable_admin(row):
@@ -206,7 +210,7 @@ def api_setup(req):
     password = auth.require_new_password(req.body.get("password"))
     conn = req.db()
     if db.any_users(conn):
-        raise ApiError(409, "Setup is already complete")
+        raise ApiError(409, "setup_complete")
     password_hash = req.app.hasher.hash(password)
     now = req.app.now()
     with req.write():
@@ -215,7 +219,7 @@ def api_setup(req):
             "SELECT ?, ?, ?, 1, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)",
             (username, display_name, password_hash, now, now))
         if cur.rowcount != 1:
-            raise ApiError(409, "Setup is already complete")
+            raise ApiError(409, "setup_complete")
         user_id = cur.lastrowid
         passports.create_personal(conn, user_id, now)
         token = create_session(conn, user_id, now)
@@ -228,14 +232,14 @@ def api_setup(req):
 def api_login(req):
     conn = req.db()
     if not db.any_users(conn):
-        raise ApiError(409, "Setup is required")
+        raise ApiError(409, "setup_required")
     username = req.body.get("username")
     password = req.body.get("password")
     user_key = username.lower() if auth.valid_username(username) else None
     ip = auth.ip_key(req.client_ip())
     lockout = req.app.lockout
     if not lockout.reserve(user_key, ip):
-        raise ApiError(429, LOCKED_MSG)
+        raise ApiError(429, "too_many_attempts")
     outcome = auth.NO_RESULT
     try:
         user = None
@@ -252,7 +256,7 @@ def api_login(req):
             ok = req.app.hasher.burn(password)
         if not ok:
             outcome = auth.FAILED
-            raise ApiError(401, "Wrong username or password")
+            raise ApiError(401, "wrong_login")
         now = req.app.now()
         with req.write():
             # An admin may have reset or disabled the account while the password was hashing.
@@ -260,7 +264,7 @@ def api_login(req):
             current = conn.execute("SELECT password_hash, disabled FROM users WHERE id = ?",
                                    (user["id"],)).fetchone()
             if current is None or current["password_hash"] != user["password_hash"] or current["disabled"]:
-                raise ApiError(401, "Wrong username or password")
+                raise ApiError(401, "wrong_login")
             conn.execute("DELETE FROM sessions WHERE expires_at <= ?", (now,))
             token = create_session(conn, user["id"], now)
             conn.execute("UPDATE users SET last_active_at = ? WHERE id = ?", (now, user["id"]))
@@ -282,18 +286,18 @@ def api_logout(req):
 def api_update_account(req):
     has_name, has_default = "display_name" in req.body, "default_passport_id" in req.body
     if not (has_name or has_default):
-        raise ApiError(400, "Nothing to update")
+        raise ApiError(400, "nothing_to_update")
     display_name = auth.clean_display_name(req.body["display_name"]) if has_name else req.user["display_name"]
     default_id = req.body.get("default_passport_id")
     if has_default and default_id is not None and not valid_id(default_id):
-        raise ApiError(400, CHOOSE_PASSPORT_MSG)
+        raise ApiError(400, "choose_passport")
     user_id = req.user["id"]
     with req.write():
         conn = req.db()
         require_live_session(req, conn)
         if has_default:
             if default_id is not None and not passports.is_member(conn, default_id, user_id):
-                raise ApiError(400, CHOOSE_PASSPORT_MSG)
+                raise ApiError(400, "choose_passport")
             conn.execute("UPDATE users SET default_passport_id = ? WHERE id = ?", (default_id, user_id))
         if has_name:
             conn.execute("UPDATE users SET display_name = ? WHERE id = ?", (display_name, user_id))
@@ -301,7 +305,7 @@ def api_update_account(req):
     return 200, {"user": {**user_json(req.user), "display_name": display_name}, "default_passport_id": effective}
 
 
-def check_own_password(req, password, wrong_message):
+def check_own_password(req, password, wrong_code):
     """Throttled check of the logged-in user's password, sharing the login username key.
 
     Returns the stored hash that was verified, for a conditional write afterwards.
@@ -310,11 +314,11 @@ def check_own_password(req, password, wrong_message):
         "SELECT password_hash, must_change_password, temp_password_set_at FROM users WHERE id = ?",
         (req.user["id"],)).fetchone()
     if row is None:
-        raise ApiError(401, "Not logged in")
+        raise ApiError(401, "not_logged_in")
     key = req.user["username"].lower()
     lockout = req.app.lockout
     if not lockout.reserve(key, None):
-        raise ApiError(429, LOCKED_MSG)
+        raise ApiError(429, "too_many_attempts")
     outcome = auth.NO_RESULT
     try:
         if auth.usable_password(password):
@@ -326,18 +330,18 @@ def check_own_password(req, password, wrong_message):
     finally:
         lockout.finish(key, None, outcome)
     if not ok:
-        raise ApiError(403, wrong_message)
+        raise ApiError(403, wrong_code)
     return row["password_hash"]
 
 
 def api_change_password(req):
     new_password = auth.require_new_password(req.body.get("new_password"))
     current_password = req.body.get("current_password")
-    verified_hash = check_own_password(req, current_password, "Current password is wrong")
+    verified_hash = check_own_password(req, current_password, "current_password_wrong")
     # Both values come from the client, so this reveals nothing about the stored password;
     # it stops a user "changing" back to a temporary password the admin knows.
     if new_password == current_password:
-        raise ApiError(400, "New password must be different from the current one")
+        raise ApiError(400, "password_unchanged")
     new_hash = req.app.hasher.hash(new_password)
     user_id = req.user["id"]
     with req.write():
@@ -347,7 +351,7 @@ def api_change_password(req):
             "UPDATE users SET password_hash = ?, must_change_password = 0, temp_password_set_at = NULL "
             "WHERE id = ? AND password_hash = ?", (new_hash, user_id, verified_hash))
         if cur.rowcount != 1:
-            raise ApiError(403, "Current password is wrong")
+            raise ApiError(403, "current_password_wrong")
         conn.execute("DELETE FROM sessions WHERE user_id = ? AND id != ?", (user_id, req.session_id))
     return 200, {"ok": True}
 
@@ -360,7 +364,7 @@ def api_logout_everywhere(req):
 
 
 def api_delete_account(req):
-    check_own_password(req, req.body.get("password"), "Password is wrong")
+    check_own_password(req, req.body.get("password"), "password_wrong")
     user_id = req.user["id"]
     # Admin status and the admin count are read inside the transaction so two
     # admins deleting themselves at once can't both pass the last-admin check.
@@ -370,7 +374,7 @@ def api_delete_account(req):
         row = conn.execute("SELECT id, is_admin, disabled, must_change_password FROM users WHERE id = ?",
                            (user_id,)).fetchone()
         if row is not None and is_last_usable_admin(conn, row):
-            raise ApiError(409, "You're the only admin, so this account can't be deleted")
+            raise ApiError(409, "only_admin_delete")
         passports.remove_user_data(conn, user_id)
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
@@ -394,7 +398,7 @@ def find_user(conn, user_id):
 def require_user(conn, user_id):
     row = find_user(conn, user_id)
     if row is None:
-        raise ApiError(404, "User not found")
+        raise ApiError(404, "user_not_found")
     return row
 
 
@@ -423,10 +427,10 @@ def api_admin_create_user(req):
     password = auth.require_new_password(req.body.get("password"))
     is_admin = req.body.get("is_admin", False)
     if type(is_admin) is not bool:
-        raise ApiError(400, "is_admin must be true or false")
+        raise ApiError(400, "is_admin_invalid")
     conn = req.db()
     if conn.execute("SELECT 1 FROM users WHERE username = ?", (username,)).fetchone():
-        raise ApiError(409, "That username is taken")
+        raise ApiError(409, "username_taken")
     password_hash = req.app.hasher.hash(password)
     now = req.app.now()
     with req.write():
@@ -438,7 +442,7 @@ def api_admin_create_user(req):
                 "VALUES (?, ?, ?, ?, ?, 0, 1, ?, NULL)",
                 (username, display_name, password_hash, int(is_admin), now, now))
         except sqlite3.IntegrityError:
-            raise ApiError(409, "That username is taken") from None
+            raise ApiError(409, "username_taken") from None
         passports.create_personal(conn, cur.lastrowid, now)
         row = find_user(conn, cur.lastrowid)
     log_admin_action(req, f"User {log_safe(username)} created")
@@ -447,7 +451,7 @@ def api_admin_create_user(req):
 
 def api_admin_update_user(req, user_id):
     if "display_name" not in req.body:
-        raise ApiError(400, "Nothing to update")
+        raise ApiError(400, "nothing_to_update")
     display_name = auth.clean_display_name(req.body["display_name"])
     user_id = int(user_id)
     conn = req.db()
@@ -455,7 +459,7 @@ def api_admin_update_user(req, user_id):
         require_admin(req, conn)
         cur = conn.execute("UPDATE users SET display_name = ? WHERE id = ?", (display_name, user_id))
         if cur.rowcount != 1:
-            raise ApiError(404, "User not found")
+            raise ApiError(404, "user_not_found")
         row = find_user(conn, user_id)
     return 200, {"user": admin_user_json(req, row)}
 
@@ -463,7 +467,7 @@ def api_admin_update_user(req, user_id):
 def api_admin_reset_password(req, user_id):
     user_id = int(user_id)
     if user_id == req.user["id"]:
-        raise ApiError(403, "Change your own password in Account settings")
+        raise ApiError(403, "reset_own_password")
     new_password = auth.require_new_password(req.body.get("new_password"))
     conn = req.db()
     require_user(conn, user_id)
@@ -475,7 +479,7 @@ def api_admin_reset_password(req, user_id):
             "UPDATE users SET password_hash = ?, must_change_password = 1, temp_password_set_at = ? "
             "WHERE id = ?", (password_hash, now, user_id))
         if cur.rowcount != 1:
-            raise ApiError(404, "User not found")
+            raise ApiError(404, "user_not_found")
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         row = find_user(conn, user_id)
     req.app.lockout.clear_user(row["username"].lower())
@@ -486,13 +490,13 @@ def api_admin_reset_password(req, user_id):
 def api_admin_disable(req, user_id):
     user_id = int(user_id)
     if user_id == req.user["id"]:
-        raise ApiError(403, "You can't disable your own account")
+        raise ApiError(403, "disable_self")
     conn = req.db()
     with req.write():
         require_admin(req, conn)
         row = require_user(conn, user_id)
         if is_last_usable_admin(conn, row):
-            raise ApiError(409, "This is the last admin, so it can't be disabled")
+            raise ApiError(409, "last_admin_disable")
         conn.execute("UPDATE users SET disabled = 1 WHERE id = ?", (user_id,))
         passports.handover_on_disable(conn, user_id)
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
@@ -530,7 +534,7 @@ def api_admin_demote(req, user_id):
         require_admin(req, conn)
         row = require_user(conn, user_id)
         if is_last_usable_admin(conn, row):
-            raise ApiError(409, "You're the only admin, so you can't remove your own admin rights")
+            raise ApiError(409, "only_admin_demote")
         conn.execute("UPDATE users SET is_admin = 0 WHERE id = ?", (user_id,))
         row = find_user(conn, user_id)
     log_admin_action(req, f"User {log_safe(row['username'])} demoted")
@@ -550,16 +554,16 @@ def api_admin_unlock(req, user_id):
 def api_admin_delete(req, user_id):
     user_id = int(user_id)
     if user_id == req.user["id"]:
-        raise ApiError(403, "Delete your own account in Account settings")
+        raise ApiError(403, "delete_self")
     confirm = req.body.get("confirm_username")
     conn = req.db()
     with req.write():
         require_admin(req, conn)
         row = require_user(conn, user_id)
         if not isinstance(confirm, str) or confirm.lower() != row["username"].lower():
-            raise ApiError(400, "Type the username to confirm")
+            raise ApiError(400, "confirm_username")
         if is_last_usable_admin(conn, row):
-            raise ApiError(409, "This is the last admin, so it can't be deleted")
+            raise ApiError(409, "last_admin_delete")
         passports.remove_user_data(conn, user_id)
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
@@ -571,11 +575,6 @@ def api_admin_delete(req, user_id):
 # --- Passports (contract 2, sections 3-5) ---
 
 MAX_ID = 9999999999
-PASSPORT_NAME_LENGTH_MSG = "Passport name must be 1-50 characters"
-PASSPORT_NAME_CHARS_MSG = "Passport name contains characters that aren't allowed"
-CHOOSE_PEOPLE_MSG = "Choose people from the list"
-CHOOSE_PASSPORT_MSG = "Choose a passport you belong to"
-NOT_FOUND_MSG = "Passport not found"
 ROLES = ("participant", "viewer")
 
 
@@ -584,24 +583,24 @@ def valid_id(value):
 
 
 def clean_passport_name(value):
-    return auth.clean_display_name(value, PASSPORT_NAME_LENGTH_MSG, PASSPORT_NAME_CHARS_MSG)
+    return auth.clean_display_name(value, "passport_name_length", "passport_name_chars")
 
 
 def person_ref(value):
     """A {user_id, username} object from the client: (id, username), or 400. Matched to a user later."""
     if not isinstance(value, dict):
-        raise ApiError(400, CHOOSE_PEOPLE_MSG)
+        raise ApiError(400, "choose_people")
     user_id, username = value.get("user_id"), value.get("username")
     # Anything that isn't a valid username can't match a user (and can't reach SQLite as a bad string).
     if not valid_id(user_id) or not auth.valid_username(username):
-        raise ApiError(400, CHOOSE_PEOPLE_MSG)
+        raise ApiError(400, "choose_people")
     return user_id, username
 
 
 def person_list(body, key):
     value = body.get(key, [])
     if not isinstance(value, list) or len(value) > passports.MAX_PEOPLE - 1:
-        raise ApiError(400, CHOOSE_PEOPLE_MSG)
+        raise ApiError(400, "choose_people")
     return [person_ref(item) for item in value]
 
 
@@ -609,7 +608,7 @@ def require_person(conn, ref):
     """Inside the transaction: the person must be one existing, enabled user (contract 2 §4)."""
     user_id = passports.find_active_user(conn, *ref)
     if user_id is None:
-        raise ApiError(400, CHOOSE_PEOPLE_MSG)
+        raise ApiError(400, "choose_people")
     return user_id
 
 
@@ -617,7 +616,7 @@ def member_passport(req, conn, passport_id):
     """The passport and the caller's membership; 404 whether it's missing or they aren't in it."""
     passport = passports.membership(conn, passport_id, req.user["id"])
     if passport is None:
-        raise ApiError(404, NOT_FOUND_MSG)
+        raise ApiError(404, "passport_not_found")
     return passport
 
 
@@ -626,7 +625,7 @@ def owner_passport(req, conn, passport_id):
     require_live_session(req, conn)
     passport = member_passport(req, conn, passport_id)
     if passport["owner_id"] != req.user["id"]:
-        raise ApiError(403, "Only the owner can do that")
+        raise ApiError(403, "owner_only")
     return passport
 
 
@@ -651,16 +650,16 @@ def api_create_passport(req):
     viewers = person_list(req.body, "viewers")
     ids = [user_id for user_id, _ in participants + viewers]
     if len(set(ids)) != len(ids) or req.user["id"] in ids:
-        raise ApiError(400, "Each person can only be added once")
+        raise ApiError(400, "person_repeated")
     user_id = req.user["id"]
     now = req.app.now()
     with req.write():
         conn = req.db()
         require_live_session(req, conn)
         if passports.owned_count(conn, user_id) >= passports.MAX_OWNED:
-            raise ApiError(409, f"You can own at most {passports.MAX_OWNED} passports")
+            raise ApiError(409, "passport_limit", {"max": passports.MAX_OWNED})
         if 1 + len(ids) > passports.MAX_PEOPLE:
-            raise ApiError(409, f"A passport can have at most {passports.MAX_PEOPLE} people")
+            raise ApiError(409, "people_limit", {"max": passports.MAX_PEOPLE})
         participant_ids = [require_person(conn, ref) for ref in participants]
         viewer_ids = [require_person(conn, ref) for ref in viewers]
         passport_id = passports.create(conn, name, user_id, participant_ids, viewer_ids, now)
@@ -678,7 +677,7 @@ def api_passport(req, passport_id):
 
 def api_rename_passport(req, passport_id):
     if "name" not in req.body:
-        raise ApiError(400, "Nothing to update")
+        raise ApiError(400, "nothing_to_update")
     name = clean_passport_name(req.body["name"])
     passport_id = int(passport_id)
     with req.write():
@@ -696,9 +695,9 @@ def api_delete_passport(req, passport_id):
         conn = req.db()
         passport = owner_passport(req, conn, passport_id)
         if passport["is_personal"]:
-            raise ApiError(409, "Your personal passport can't be deleted")
+            raise ApiError(409, "personal_passport_delete")
         if not isinstance(confirm, str) or unicodedata.normalize("NFC", confirm).strip() != passport["name"]:
-            raise ApiError(400, "Type the passport name to confirm")
+            raise ApiError(400, "confirm_passport_name")
         # Memberships cascade; defaults pointing here become NULL (ON DELETE SET NULL).
         conn.execute("DELETE FROM passports WHERE id = ? AND owner_id = ?", (passport_id, req.user["id"]))
     return 200, {"ok": True}
@@ -708,18 +707,18 @@ def api_add_member(req, passport_id):
     ref = person_ref(req.body)
     role = req.body.get("role")
     if role not in ROLES:
-        raise ApiError(400, "Role must be participant or viewer")
+        raise ApiError(400, "role_invalid")
     passport_id = int(passport_id)
     with req.write():
         conn = req.db()
         passport = owner_passport(req, conn, passport_id)
         if passport["is_personal"] and role == "participant":
-            raise ApiError(409, "A personal passport can't have participants")
+            raise ApiError(409, "personal_passport_participants")
         user_id = require_person(conn, ref)
         if passports.is_member(conn, passport_id, user_id):
-            raise ApiError(409, "Already in this passport")
+            raise ApiError(409, "already_member")
         if passports.member_count(conn, passport_id) >= passports.MAX_PEOPLE:
-            raise ApiError(409, f"A passport can have at most {passports.MAX_PEOPLE} people")
+            raise ApiError(409, "people_limit", {"max": passports.MAX_PEOPLE})
         passports.add_member(conn, passport_id, user_id, role, req.app.now())
         detail = reloaded_detail(req, conn, passport_id)
     return 200, detail
@@ -731,11 +730,11 @@ def api_remove_member(req, passport_id, user_id):
         conn = req.db()
         passport = owner_passport(req, conn, passport_id)
         if user_id == passport["owner_id"]:
-            raise ApiError(409, "The owner can't be removed")
+            raise ApiError(409, "owner_remove")
         cur = conn.execute("DELETE FROM passport_members WHERE passport_id = ? AND user_id = ?",
                            (passport_id, user_id))
         if cur.rowcount != 1:
-            raise ApiError(404, "Not in this passport")
+            raise ApiError(404, "not_member")
         passports.clear_default(conn, user_id, passport_id)
         detail = reloaded_detail(req, conn, passport_id)
     return 200, detail
@@ -751,12 +750,12 @@ def api_leave_passport(req, passport_id):
         # began that made the caller owner is refused below.
         passport = member_passport(req, conn, passport_id)
         if passport["owner_id"] == user_id:
-            raise ApiError(409, "The owner can't leave. Delete the passport instead.")
+            raise ApiError(409, "owner_leave")
         cur = conn.execute(
             "DELETE FROM passport_members WHERE passport_id = ? AND user_id = ? "
             "AND user_id != (SELECT owner_id FROM passports WHERE id = ?)", (passport_id, user_id, passport_id))
         if cur.rowcount != 1:
-            raise ApiError(404, NOT_FOUND_MSG)
+            raise ApiError(404, "passport_not_found")
         passports.clear_default(conn, user_id, passport_id)
     return 200, {"ok": True}
 
@@ -778,31 +777,26 @@ def api_delete_preview(req):
 
 # --- Countries and meals (contract 3, sections 4-6) ---
 
-COUNTRY_NOT_FOUND_MSG = "Country not found"
-MEAL_NOT_FOUND_MSG = "Meal not found"
-PARTICIPANTS_ONLY_MSG = "Only participants can log meals"
-
-
 def require_country(code):
     """After the membership check: the code must be one of the 197."""
     country = countries.BY_CODE.get(code)
     if country is None:
-        raise ApiError(404, COUNTRY_NOT_FOUND_MSG)
+        raise ApiError(404, "country_not_found")
     return country
 
 
 def require_participant(passport):
     if passport["role"] != "participant":
-        raise ApiError(403, PARTICIPANTS_ONLY_MSG)
+        raise ApiError(403, "participants_only")
 
 
 def own_meal(req, conn, passport_id, meal_id):
     """Inside the write transaction, after the membership check: the meal is in P (404) and the caller's (403)."""
     meal = meals.find_meal(conn, passport_id, meal_id)
     if meal is None:
-        raise ApiError(404, MEAL_NOT_FOUND_MSG)
+        raise ApiError(404, "meal_not_found")
     if meal["user_id"] != req.user["id"]:
-        raise ApiError(403, "You can only change your own meals")
+        raise ApiError(403, "own_meals_only")
     return meal
 
 
@@ -840,9 +834,9 @@ def api_create_meal(req, passport_id, code):
         passport = member_passport(req, conn, passport_id)
         require_country(code)
         require_participant(passport)
-        message = meals.limit_reached(conn, passport_id, user_id, code)
-        if message is not None:
-            raise ApiError(409, message)
+        limit = meals.limit_reached(conn, passport_id, user_id, code)
+        if limit is not None:
+            raise ApiError(409, *limit)
         meal_id = meals.insert(conn, passport_id, user_id, code, meal, now)
         row = meals.meal_by_id(conn, meal_id)
     return 201, {"meal": meals.meal_json(row, user_id)}
@@ -860,7 +854,7 @@ def api_update_meal(req, passport_id, meal_id):
         own_meal(req, conn, passport_id, meal_id)
         require_participant(passport)
         if not meals.update(conn, passport_id, user_id, meal_id, meal, now):
-            raise ApiError(404, MEAL_NOT_FOUND_MSG)
+            raise ApiError(404, "meal_not_found")
         row = meals.meal_by_id(conn, meal_id)
     return 200, {"meal": meals.meal_json(row, user_id)}
 
@@ -874,7 +868,7 @@ def api_delete_meal(req, passport_id, meal_id):
         member_passport(req, conn, passport_id)
         meal = own_meal(req, conn, passport_id, meal_id)
         if not meals.delete(conn, passport_id, user_id, meal_id):
-            raise ApiError(404, MEAL_NOT_FOUND_MSG)
+            raise ApiError(404, "meal_not_found")
         still_done = meals.has_meal(conn, passport_id, user_id, meal["country_code"])
     return 200, {"ok": True, "still_done": still_done}
 
@@ -884,7 +878,7 @@ def api_search(req, passport_id):
     passport_id = int(passport_id)
     app = req.app
     if not app.search_slots.acquire(timeout=app.search_wait):
-        raise ApiError(503, BUSY_MSG)
+        raise ApiError(503, "busy")
     try:
         limit = search.Budget(app.search_budget)
         conn = req.db()
@@ -896,7 +890,7 @@ def api_search(req, passport_id):
         except sqlite3.OperationalError:
             if not limit.expired:
                 raise
-            raise ApiError(503, BUSY_MSG) from None
+            raise ApiError(503, "busy") from None
     finally:
         app.search_slots.release()
     return 200, {"matches": matches}
@@ -1115,17 +1109,17 @@ class Handler(BaseHTTPRequestHandler):
         except _CloseConnection:
             self.close_connection = True
         except ApiError as e:
-            self.send_json(e.status, {"error": e.message, **e.extra})
+            self.send_json(e.status, e.body)
         except auth.Invalid as e:
-            self.send_json(400, {"error": str(e)})
+            self.send_json(400, e.body)
         except auth.Busy:
-            self.send_json(503, {"error": BUSY_MSG})
+            self.send_json(503, errors.body("busy"))
         except (ConnectionError, TimeoutError):
             raise
         except Exception as e:
             self.app.log_exception(e)
             self.cookie_out = None
-            self.send_json(500, {"error": "Internal error"})
+            self.send_json(500, errors.body("internal_error"))
         finally:
             if self.conn is not None:
                 self.conn.close()
@@ -1133,15 +1127,15 @@ class Handler(BaseHTTPRequestHandler):
     def route(self):
         for name in SINGLE_HEADERS:
             if len(self.headers.get_all(name) or ()) > 1:
-                raise ApiError(400, "Bad request")
+                raise ApiError(400, "bad_request")
         host = self.headers.get("Host")
         if host is None or not host_allowed(host, self.app.config.allowed_hosts):
-            raise ApiError(421, "Unknown host")
+            raise ApiError(421, "unknown_host")
         method = self.command
         if method not in HANDLED_METHODS:
-            raise ApiError(405, "Method not allowed")
+            raise ApiError(405, "method_not_allowed")
         if self.headers.get_all("Transfer-Encoding"):
-            raise ApiError(411, "Content-Length required")
+            raise ApiError(411, "length_required")
         self.app.warn_untrusted_forwarding(self.client_address[0], self.headers)
 
         path = self.raw_path.split("?", 1)[0]
@@ -1151,14 +1145,14 @@ class Handler(BaseHTTPRequestHandler):
         if path.startswith("/api/"):
             route, args = self.find_route(path, method)
         elif writes:
-            raise ApiError(405, "Method not allowed")
+            raise ApiError(405, "method_not_allowed")
 
         if writes:
             self.body = self.read_json_body(host)
         else:
             length = self.headers.get("Content-Length")
             if length is not None and length != "0":
-                raise ApiError(400, "Bad request")
+                raise ApiError(400, "bad_request")
             self.body = {}
 
         if route is None:
@@ -1167,11 +1161,11 @@ class Handler(BaseHTTPRequestHandler):
         self.load_session(renew=route.renew)
         if not route.public:
             if self.user is None:
-                raise ApiError(401, "Not logged in")
+                raise ApiError(401, "not_logged_in")
             if self.user["must_change_password"] and not route.allow_pending:
-                raise ApiError(403, "You must change your password first", {"password_change_required": True})
+                raise ApiError(403, "password_change_required", extra={"password_change_required": True})
             if route.admin and not self.user["is_admin"]:
-                raise ApiError(403, "Admins only")
+                raise ApiError(403, "admins_only")
         status, payload = route.handler(self, *args)
         self.send_json(status, payload)
 
@@ -1183,25 +1177,25 @@ class Handler(BaseHTTPRequestHandler):
                 continue
             route = methods.get("GET" if method == "HEAD" else method)
             if route is None:
-                raise ApiError(405, "Method not allowed")
+                raise ApiError(405, "method_not_allowed")
             return route, match.groups()
-        raise ApiError(404, "Not found")
+        raise ApiError(404, "not_found")
 
     def read_json_body(self, host):
         origin = self.headers.get("Origin")
         if origin is None or origin.lower() not in ("http://" + host.lower(), "https://" + host.lower()):
-            raise ApiError(403, "Cross-origin request blocked")
+            raise ApiError(403, "cross_origin")
         media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
         if media_type != "application/json":
-            raise ApiError(415, "Content-Type must be application/json")
+            raise ApiError(415, "content_type_json")
         length = self.headers.get("Content-Length")
         if length is None:
-            raise ApiError(411, "Content-Length required")
+            raise ApiError(411, "length_required")
         if not CONTENT_LENGTH_RE.fullmatch(length):
-            raise ApiError(400, "Invalid Content-Length")
+            raise ApiError(400, "invalid_content_length")
         length = int(length)
         if length > MAX_BODY:
-            raise ApiError(413, "Request too large")
+            raise ApiError(413, "too_large")
         data = self.read_exactly(length)
         if not self.app.reaper.finish_reading(self.request):
             raise _CloseConnection()
@@ -1210,9 +1204,9 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(data.decode("utf-8"), parse_constant=_reject_constant)
         except (UnicodeDecodeError, ValueError, RecursionError):
-            raise ApiError(400, "Invalid JSON") from None
+            raise ApiError(400, "invalid_json") from None
         if not isinstance(body, dict):
-            raise ApiError(400, "Invalid JSON")
+            raise ApiError(400, "invalid_json")
         return body
 
     def read_exactly(self, length):
@@ -1315,12 +1309,12 @@ class Handler(BaseHTTPRequestHandler):
     def serve_static(self, path):
         entry = STATIC_FILES.get(path)
         if entry is None:
-            raise ApiError(404, "Not found")
+            raise ApiError(404, "not_found")
         filename, content_type = entry
         try:
             data = (self.app.static_dir / filename).read_bytes()
         except FileNotFoundError:
-            raise ApiError(404, "Not found") from None
+            raise ApiError(404, "not_found") from None
         self.send_body(200, data, content_type, "no-cache")
 
     def send_json(self, status, payload):
@@ -1347,7 +1341,7 @@ class Handler(BaseHTTPRequestHandler):
             self.request_version = "HTTP/1.0"  # so the status line and headers are sent
         self.close_connection = True
         self.cookie_out = None
-        self.send_json(code, {"error": STDLIB_ERRORS.get(code, "Bad request")})
+        self.send_json(code, errors.body(STDLIB_ERRORS.get(code, "bad_request")))
 
 
 # --- Connection tracking ---

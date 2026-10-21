@@ -165,7 +165,8 @@ class AccessTests(SearchTestCase):
 class ValidationTests(SearchTestCase):
     def assert_error(self, q, message):
         resp = self.search(self.pid, q)
-        self.assertEqual((resp.status, resp.json()), (400, {"error": message}), repr(q)[:80])
+        self.assertEqual((resp.status, resp.error), (400, message), repr(q)[:80])
+        self.assertEqual(set(resp.json()) - {"code", "params"}, {"error"})
 
     def test_not_a_string(self):
         for q in (5, 1.5, [], ["peru"], None, True, False, {}, {"q": "peru"}):
@@ -554,7 +555,7 @@ class LimitTests(SearchTestCase):
             self.assertTrue(slots.acquire(blocking=False))
         try:
             resp = self.search(self.pid, "ceviche")
-            self.assertEqual((resp.status, resp.json()), (503, {"error": BUSY}))
+            self.assertEqual((resp.status, resp.json()), (503, {"error": BUSY, "code": "busy"}))
             # validation still comes first
             self.assertEqual(self.search(self.pid, "").status, 400)
             slots.release()
@@ -579,7 +580,7 @@ class LimitTests(SearchTestCase):
         self.insert_meals(self.pid, 1, [("JP", DATE, "Dish", "", "x" * 500)] * 3000)
         self.app.search_budget = -1  # already spent: the first progress callback interrupts
         resp = self.search(self.pid, "zzz")
-        self.assertEqual((resp.status, resp.json()), (503, {"error": BUSY}))
+        self.assertEqual((resp.status, resp.json()), (503, {"error": BUSY, "code": "busy"}))
         self.assertNotIn("Traceback", self.log.getvalue())
         self.assertNotIn("zzz", self.log.getvalue())
         self.assertNotIn("interrupt", self.log.getvalue())

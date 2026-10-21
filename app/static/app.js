@@ -1,5 +1,153 @@
 'use strict';
 
+// ---- Text: the strings table (strings-en.js) and lookups ----
+
+// Warns once per key (or other subject), so a gap is visible without flooding the console.
+const warned = new Set();
+function warnOnce(subject, problem) {
+  if (warned.has(subject)) return;
+  warned.add(subject);
+  console.warn(`World Eats strings: ${problem}: ${subject}`); // i18n-ok console only
+}
+
+// Only a plain object is accepted; it's frozen (plural objects too) so nothing can change it later.
+function acceptTable(table) {
+  if (table === null || typeof table !== 'object' || Object.getPrototypeOf(table) !== Object.prototype) {
+    warnOnce('WORLD_EATS_STRINGS', 'table missing, showing keys'); // i18n-ok console only
+    return Object.freeze({});
+  }
+  for (const value of Object.values(table)) {
+    if (value !== null && typeof value === 'object') Object.freeze(value);
+  }
+  return Object.freeze(table);
+}
+
+// The one place the table is chosen. There's only English for now.
+const STRINGS = acceptTable(self.WORLD_EATS_STRINGS);
+const tableString = (key) => (Object.hasOwn(STRINGS, key) && typeof STRINGS[key] === 'string' ? STRINGS[key] : null);
+const LANG = tableString('meta.lang') || 'en';
+
+// A bad language tag falls back to English rather than breaking the page.
+const PLURALS = (() => {
+  try {
+    return new Intl.PluralRules(LANG);
+  } catch {
+    return new Intl.PluralRules('en');
+  }
+})();
+const UPPER_LANG = (() => {
+  try {
+    'a'.toLocaleUpperCase(LANG);
+    return LANG;
+  } catch {
+    return 'en';
+  }
+})();
+
+// {name} placeholders and {{ / }} for literal braces, in one pass: inserted
+// values are never scanned again. A missing param stays as {name}.
+const PLACEHOLDER_RE = /\{\{|\}\}|\{([a-z][a-zA-Z0-9]*)\}/g;
+
+function fillTemplate(key, template, params) {
+  return template.replace(PLACEHOLDER_RE, (token, name) => {
+    if (token === '{{') return '{';
+    if (token === '}}') return '}';
+    if (params && Object.hasOwn(params, name)) return String(params[name]);
+    warnOnce(key, `no value for {${name}}`); // i18n-ok console only
+    return token;
+  });
+}
+
+// Text for a key (a string entry). The result is plain text: set it with
+// textContent, or wrap it as ${esc(t(…))} in an innerHTML template.
+function t(key, params) {
+  const template = tableString(key);
+  if (template === null) {
+    warnOnce(key, 'missing string'); // i18n-ok console only
+    return key;
+  }
+  return fillTemplate(key, template, params);
+}
+
+// Text for a plural entry, chosen by count ({count} is filled in too).
+function tn(key, count, params) {
+  const forms = Object.hasOwn(STRINGS, key) ? STRINGS[key] : null;
+  if (forms === null || typeof forms !== 'object') {
+    warnOnce(key, 'missing plural'); // i18n-ok console only
+    return key;
+  }
+  const form = PLURALS.select(count);
+  const template = Object.hasOwn(forms, form) && typeof forms[form] === 'string' ? forms[form] : forms.other;
+  if (typeof template !== 'string') {
+    warnOnce(key, 'plural without other'); // i18n-ok console only
+    return key;
+  }
+  return fillTemplate(key, template, { ...params, count });
+}
+
+// A server error's text from its code: used only if the code is well formed,
+// has an entry, and every placeholder in it has an integer param; otherwise
+// the server's own English (`fallback`).
+const ERROR_CODE_RE = /^[a-z][a-z0-9_]{0,39}$/;
+
+function errorText(code, params, fallback) {
+  if (typeof code !== 'string' || !ERROR_CODE_RE.test(code)) return fallback;
+  const key = `error.${code}`;
+  const template = tableString(key);
+  if (template === null) return fallback;
+  const values = params !== null && typeof params === 'object' && !Array.isArray(params) ? params : {};
+  for (const [, name] of template.matchAll(PLACEHOLDER_RE)) {
+    if (name !== undefined && !(Object.hasOwn(values, name) && Number.isInteger(values[name]))) return fallback;
+  }
+  return fillTemplate(key, template, values);
+}
+
+// A country's name from the table, or the server's name if there's no entry.
+function countryName(code, fallbackName) {
+  if (typeof code !== 'string' || !CODE_RE.test(code)) return fallbackName;
+  return tableString(`country.${code}`) ?? fallbackName;
+}
+
+// The departure board's short form of a country's name, or null.
+function boardShort(code) {
+  if (typeof code !== 'string' || !CODE_RE.test(code)) return null;
+  return tableString(`board.short.${code}`);
+}
+
+// Region names shown in the UI, keyed by the server's region value (the value
+// itself is still what's sorted, filtered and kept in the address).
+const REGION_NAMES = Object.freeze({
+  // The lexer behind the hard-coded-text test counts property-name literals too.
+  Africa: () => t('region.africa'),
+  Asia: () => t('region.asia'),
+  Europe: () => t('region.europe'),
+  'North America': () => t('region.north_america'), // i18n-ok server region value
+  Oceania: () => t('region.oceania'),
+  'South America': () => t('region.south_america'), // i18n-ok server region value
+});
+const regionName = (region) => (Object.hasOwn(REGION_NAMES, region) ? REGION_NAMES[region]() : region);
+
+// index.html keeps its English as a fallback; elements marked with data-i18n
+// (text) or data-i18n-<attribute> get the table's text once, before the first render.
+const I18N_ATTRIBUTES = ['placeholder', 'aria-label', 'title'];
+
+function applyPageStrings() {
+  document.documentElement.lang = LANG;
+  for (const el of document.querySelectorAll('[data-i18n]')) {
+    const text = tableString(el.dataset.i18n);
+    if (text === null) warnOnce(el.dataset.i18n, 'missing string'); // i18n-ok console only
+    else el.textContent = fillTemplate(el.dataset.i18n, text);
+  }
+  for (const attr of I18N_ATTRIBUTES) {
+    for (const el of document.querySelectorAll(`[data-i18n-${attr}]`)) {
+      const key = el.getAttribute(`data-i18n-${attr}`);
+      const text = tableString(key);
+      if (text === null) warnOnce(key, 'missing string'); // i18n-ok console only
+      else el.setAttribute(attr, fillTemplate(key, text));
+    }
+  }
+}
+
 // ---- State and small helpers ----
 
 const state = { user: null, setupRequired: false };
@@ -17,7 +165,7 @@ function esc(s) {
 }
 
 const badgesHtml = (badges) => badges
-  .map(([text, cls]) => `<span class="badge ${cls}">${esc(text)}</span>`)
+  .map(([text, cls]) => `<span class="badge ${cls}">${esc(text)}</span>`) // i18n-ok HTML markup
   .join('');
 
 function textEl(tag, text, className = '') {
@@ -27,10 +175,12 @@ function textEl(tag, text, className = '') {
   return el;
 }
 
+// `code` is the server's error code ('' if none); branches compare codes, never text.
 class ApiError extends Error {
-  constructor(message, status) {
+  constructor(message, status, code = '') {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -46,7 +196,7 @@ async function api(method, path, body) {
   try {
     res = await fetch(path, opts);
   } catch {
-    throw new ApiError('Could not reach the server. Check your connection and try again.', 0);
+    throw new ApiError(t('client.network'), 0);
   }
   let data = null;
   try {
@@ -56,16 +206,18 @@ async function api(method, path, body) {
   }
   if (res.ok && data !== null && typeof data === 'object') return data;
 
-  const fallback = `Something went wrong (HTTP ${Number(res.status)})`;
-  const message = !res.ok && data && typeof data.error === 'string' ? data.error : fallback;
+  const hasError = !res.ok && data && typeof data.error === 'string';
+  const message = hasError ? errorText(data.code, data.params, data.error)
+    : t('client.http_status', { status: Number(res.status) });
+  const code = hasError && typeof data.code === 'string' ? data.code : '';
   if (res.status === 401 && path !== '/api/login' && path !== '/api/session') {
     onSessionLost();
   } else if (res.status === 403 && data && data.password_change_required === true) {
     onPasswordChangeRequired();
-  } else if (res.status === 403 && path.startsWith('/api/admin/') && message === 'Admins only') {
+  } else if (res.status === 403 && path.startsWith('/api/admin/') && code === 'admins_only') {
     onAdminLost();
   }
-  throw new ApiError(message, res.status);
+  throw new ApiError(message, res.status, code);
 }
 
 // ---- Feedback: inline form errors and toasts (textContent only) ----
@@ -113,7 +265,12 @@ function bindForm(form, handler) {
   });
 }
 
-const fail = (message) => { throw new Error(message); };
+// A client-side error. `code` (optional) lets it steer the same branches as a server error.
+const fail = (message, code = '') => {
+  const err = new Error(message);
+  err.code = code;
+  throw err;
+};
 
 // Abandons an action without telling the user, e.g. when the session ended
 // and the page has already been cleared and re-rendered.
@@ -121,29 +278,46 @@ class QuietError extends Error {}
 
 // ---- Client-side checks mirroring contract §4 (the server is authoritative) ----
 
-const USERNAME_RE = /^[A-Za-z0-9._-]{3,32}$/;
+// Limits shared by the checks below and their messages (the server's error codes).
+const USERNAME_MIN = 3;
+const USERNAME_MAX = 32;
+const NAME_MIN = 1;
+const NAME_MAX = 50;
+const PASSWORD_MIN = 12;
+const PASSWORD_MAX = 128;
+const USERNAME_RE = new RegExp(`^[A-Za-z0-9._-]{${USERNAME_MIN},${USERNAME_MAX}}$`);
 // Cc, Cs, Co, Cn, Zl, Zp, and Cf except U+200D (zero-width joiner).
 const BAD_NAME_CHAR_RE = /[\p{Cc}\p{Cs}\p{Co}\p{Cn}\p{Zl}\p{Zp}]|(?!\u200D)\p{Cf}/u;
 const codePoints = (s) => [...s].length;
 
 function checkUsername(value) {
-  if (!USERNAME_RE.test(value)) fail('Username must be 3-32 characters: letters, digits, . _ -');
+  if (!USERNAME_RE.test(value)) fail(t('error.username_invalid', { min: USERNAME_MIN, max: USERNAME_MAX }));
 }
 
 // Display names and passport names share one rule set, with different messages.
-function checkName(value, label) {
+function checkName(value, messages) {
   const name = value.normalize('NFC').trim();
   const n = codePoints(name);
-  if (n < 1 || n > 50) fail(`${label} must be 1-50 characters`);
-  if (BAD_NAME_CHAR_RE.test(name)) fail(`${label} contains characters that aren't allowed`);
+  if (n < NAME_MIN || n > NAME_MAX) fail(messages.length());
+  if (BAD_NAME_CHAR_RE.test(name)) fail(messages.chars());
 }
 
-const checkDisplayName = (value) => checkName(value, 'Display name');
-const checkPassportName = (value) => checkName(value, 'Passport name');
+const DISPLAY_NAME_MESSAGES = Object.freeze({
+  length: () => t('error.display_name_length', { min: NAME_MIN, max: NAME_MAX }),
+  chars: () => t('error.display_name_chars'),
+});
+const PASSPORT_NAME_MESSAGES = Object.freeze({
+  length: () => t('error.passport_name_length', { min: NAME_MIN, max: NAME_MAX }),
+  chars: () => t('error.passport_name_chars'),
+});
+const checkDisplayName = (value) => checkName(value, DISPLAY_NAME_MESSAGES);
+const checkPassportName = (value) => checkName(value, PASSPORT_NAME_MESSAGES);
 
 function checkNewPassword(value) {
   const n = codePoints(value);
-  if (n < 12 || n > 128 || /\p{Cs}/u.test(value)) fail('Password must be 12-128 characters');
+  if (n < PASSWORD_MIN || n > PASSWORD_MAX || /\p{Cs}/u.test(value)) {
+    fail(t('error.password_length', { min: PASSWORD_MIN, max: PASSWORD_MAX }));
+  }
 }
 
 // ---- Views and routing ----
@@ -338,7 +512,7 @@ async function onAdminLost() {
   if (!(await refreshSession()) && state.user) state.user.is_admin = false;
   // "Admins only" can also mean the password must now be changed; the router
   // then shows the forced view, so only toast if admin rights are really gone.
-  if (state.user && !state.user.is_admin) toast("You're no longer an admin");
+  if (state.user && !state.user.is_admin) toast(t('toast.admin_lost'));
   navigate('#/');
 }
 
@@ -393,7 +567,7 @@ bindForm($('login-form'), async (form) => {
   const username = form.elements.username.value;
   const password = form.elements.password.value;
   // Avoid sending an empty attempt, which the server would count as a failure.
-  if (!username || !password) fail('Enter your username and password');
+  if (!username || !password) fail(t('client.login_empty'));
   try {
     const data = await api('POST', '/api/login', { username, password });
     form.reset();
@@ -481,18 +655,18 @@ bindForm($('name-form'), async (form) => {
   state.user = data.user;
   updateUserText();
   form.elements.display_name.value = data.user.display_name;
-  toast('Display name saved');
+  toast(t('toast.display_name_saved'));
 });
 
 bindForm($('password-form'), async (form) => {
   const current = form.elements.current_password.value;
   const next = form.elements.new_password.value;
-  if (!current) fail('Enter your current password');
+  if (!current) fail(t('client.current_password_empty'));
   checkNewPassword(next);
-  if (next !== form.elements.confirm_password.value) fail("Passwords don't match");
+  if (next !== form.elements.confirm_password.value) fail(t('client.passwords_mismatch'));
   await api('POST', '/api/account/password', { current_password: current, new_password: next });
   form.reset();
-  toast('Password changed. Other devices were logged out.');
+  toast(t('toast.password_changed_others'));
 });
 
 // Bumped whenever a dialog opens a load or closes, so a slow load for a
@@ -527,20 +701,20 @@ bindDialog('delete-open', 'delete-dialog', loadDeletePreview);
 
 bindForm($('default-form'), async () => {
   const select = $('default-passport');
-  if (select.disabled || !ID_RE.test(select.value)) fail('Choose a passport you belong to');
+  if (select.disabled || !ID_RE.test(select.value)) fail(t('error.choose_passport'));
   await api('PATCH', '/api/account', { default_passport_id: Number(select.value) });
-  toast('Default passport saved');
+  toast(t('toast.default_saved'));
 });
 
 function defaultOptionText(p) {
-  if (p.role !== 'owner') return `${p.name} (${personLabel(p.owner)})`;
-  return p.is_personal ? `${p.name} (personal)` : p.name;
+  if (p.role !== 'owner') return t('account.default_option_shared', { name: p.name, owner: personLabel(p.owner) });
+  return p.is_personal ? t('account.default_option_personal', { name: p.name }) : p.name;
 }
 
 async function loadDefaultSelect(token) {
   const select = $('default-passport');
   select.disabled = true;
-  select.replaceChildren(new Option('Loading…', ''));
+  select.replaceChildren(new Option(t('common.loading'), ''));
   let list;
   try {
     list = await api('GET', '/api/passports');
@@ -558,33 +732,35 @@ async function loadDefaultSelect(token) {
 }
 
 function previewLines(preview) {
-  const lines = ['Your personal passport will be deleted.'];
-  for (const h of preview.handed_over) lines.push(`Handed over: ${h.name} → ${personLabel(h.new_owner)}`);
-  for (const d of preview.deleted) lines.push(`Deleted: ${d.name}`);
+  const lines = [t('account.delete_preview_personal')];
+  for (const h of preview.handed_over) {
+    lines.push(t('account.delete_preview_handed_over', { name: h.name, owner: personLabel(h.new_owner) }));
+  }
+  for (const d of preview.deleted) lines.push(t('account.delete_preview_deleted', { name: d.name }));
   const left = Number(preview.left);
-  if (left > 0) lines.push(`You'll be removed from ${left} other ${left === 1 ? 'passport' : 'passports'}.`);
-  lines.push('All your meals will be deleted.');
+  if (left > 0) lines.push(tn('account.delete_preview_left', left));
+  lines.push(t('account.delete_preview_meals'));
   return lines;
 }
 
 // The delete button stays disabled until the preview has loaded, so the
 // consequences are always on screen before the account can be deleted.
 async function loadDeletePreview() {
-  const t = ++dialogToken;
+  const dt = ++dialogToken;
   const box = $('delete-preview');
-  box.replaceChildren(textEl('p', 'Checking what happens to your passports…', 'muted'));
+  box.replaceChildren(textEl('p', t('account.delete_preview_loading'), 'muted'));
   $('delete-submit').disabled = true;
   let preview;
   try {
     preview = await api('GET', '/api/account/delete-preview');
   } catch (err) {
-    if (t === dialogToken) {
+    if (dt === dialogToken) {
       box.replaceChildren();
       setError($('delete-form'), err.message);
     }
     return;
   }
-  if (t !== dialogToken) return;
+  if (dt !== dialogToken) return;
   box.replaceChildren(...previewLines(preview).map((line) => textEl('p', line)));
   $('delete-submit').disabled = false;
 }
@@ -596,7 +772,7 @@ bindForm($('logout-all-form'), async () => {
 
 bindForm($('delete-form'), async (form) => {
   const password = form.elements.password.value;
-  if (!password) fail('Enter your password');
+  if (!password) fail(t('client.password_empty'));
   await api('POST', '/api/account/delete', { password });
   clearSessionUi();
   await loadSession();
@@ -613,15 +789,24 @@ let countryDetail = null;
 let mealEdit = null;
 let mealDelete = null;
 
-const ROLE_LABELS = { owner: 'Owner', participant: 'Participant', viewer: 'Viewer' };
+const ROLE_LABELS = Object.freeze({
+  owner: () => t('role.owner'),
+  participant: () => t('role.participant'),
+  viewer: () => t('role.viewer'),
+});
+const roleLabel = (role) => (typeof role === 'string' && Object.hasOwn(ROLE_LABELS, role) ? ROLE_LABELS[role]() : '');
 // Display names aren't unique, so a person is always named with @username too.
-const personLabel = (p) => `${p.display_name}${p.inactive ? ' (inactive)' : ''} @${p.username}`;
+const personLabel = (p) => (p.inactive
+  ? t('person.label_inactive', { name: p.display_name, username: p.username })
+  : t('person.label', { name: p.display_name, username: p.username }));
 const personRef = (u) => ({ user_id: u.id, username: u.username });
+// People per passport, owner included (the server's limit).
+const MAX_PEOPLE = 20;
 
 // API paths are built only from an id that matches the id pattern.
 function passportPath(id, suffix = '') {
   const s = String(id);
-  if (!ID_RE.test(s)) fail('Passport not found');
+  if (!ID_RE.test(s)) fail(t('client.passport_not_found'), 'passport_not_found');
   return `/api/passports/${s}${suffix}`;
 }
 
@@ -656,19 +841,20 @@ function clearPassportUi() {
 // inList: the list card's shorter wording for your own passports.
 function ownerLine(p, inList) {
   const own = p.role === 'owner';
-  if (p.is_personal && own) return inList ? 'Personal' : 'Personal passport';
-  if (p.is_personal) return `Personal passport of ${personLabel(p.owner)}`;
-  return own && inList ? 'Owned by you' : `Owned by ${personLabel(p.owner)}`;
+  if (p.is_personal && own) return inList ? t('passport.owner_personal_short') : t('passport.owner_personal');
+  if (p.is_personal) return t('passport.owner_personal_of', { owner: personLabel(p.owner) });
+  return own && inList ? t('passport.owner_you') : t('passport.owner_other', { owner: personLabel(p.owner) });
 }
 
 function passportCardHtml(p) {
   const badges = [];
-  if (p.is_default) badges.push(['Default', 'badge-accent']);
-  if (ROLE_LABELS[p.role]) badges.push([ROLE_LABELS[p.role], '']);
-  return `<li><button type="button" class="list-card" data-passport-id="${esc(String(p.id))}">`
-    + `<span class="list-card-title">${esc(p.name)}</span>`
-    + `<span class="list-card-sub">${esc(ownerLine(p, true))}</span>`
-    + `<span class="badges">${badgesHtml(badges)}</span>`
+  if (p.is_default) badges.push([t('passport.default_badge'), 'badge-accent']);
+  const role = roleLabel(p.role);
+  if (role) badges.push([role, '']);
+  return `<li><button type="button" class="list-card" data-passport-id="${esc(String(p.id))}">` // i18n-ok HTML markup
+    + `<span class="list-card-title">${esc(p.name)}</span>` // i18n-ok HTML markup
+    + `<span class="list-card-sub">${esc(ownerLine(p, true))}</span>` // i18n-ok HTML markup
+    + `<span class="badges">${badgesHtml(badges)}</span>` // i18n-ok HTML markup
     + '</button></li>';
 }
 
@@ -697,20 +883,20 @@ $('passport-list').addEventListener('click', (event) => {
 
 // Loads GET /api/users for a picker dialog; ignored if the dialog closed meanwhile.
 async function loadPickUsers(form, status, onLoaded) {
-  const t = ++dialogToken;
-  status.textContent = 'Loading people…';
+  const dt = ++dialogToken;
+  status.textContent = t('people.loading');
   status.hidden = false;
   let users;
   try {
     ({ users } = await api('GET', '/api/users'));
   } catch (err) {
-    if (t === dialogToken) {
+    if (dt === dialogToken) {
       status.hidden = true;
       setError(form, err.message);
     }
     return;
   }
-  if (t !== dialogToken) return;
+  if (dt !== dialogToken) return;
   pickUsers = users.filter((u) => ID_RE.test(String(u.id)));
   status.hidden = true;
   onLoaded(pickUsers);
@@ -718,13 +904,16 @@ async function loadPickUsers(form, status, onLoaded) {
 
 function pickRowHtml(u) {
   const id = esc(String(u.id));
-  return `<li class="pick-row"><label for="new-passport-person-${id}">`
-    + `<span class="person-name">${esc(u.display_name)}</span>`
-    + `<span class="person-username">@${esc(u.username)}</span></label>`
-    + `<select id="new-passport-person-${id}" data-user-id="${id}">`
-    + '<option value="">Not added</option>'
-    + '<option value="participant">Participant</option>'
-    + '<option value="viewer">Viewer</option>'
+  const notAdded = t('people.not_added');
+  const participant = t('role.participant');
+  const viewer = t('role.viewer');
+  return `<li class="pick-row"><label for="new-passport-person-${id}">` // i18n-ok HTML markup
+    + `<span class="person-name">${esc(u.display_name)}</span>` // i18n-ok HTML markup
+    + `<span class="person-username">@${esc(u.username)}</span></label>` // i18n-ok HTML markup
+    + `<select id="new-passport-person-${id}" data-user-id="${id}">` // i18n-ok HTML markup
+    + `<option value="">${esc(notAdded)}</option>` // i18n-ok HTML markup
+    + `<option value="participant">${esc(participant)}</option>` // i18n-ok HTML markup
+    + `<option value="viewer">${esc(viewer)}</option>` // i18n-ok HTML markup
     + '</select></li>';
 }
 
@@ -734,7 +923,7 @@ bindDialog('new-passport-open', 'new-passport-dialog', () => {
   $('new-passport-people').replaceChildren();
   loadPickUsers(form, status, (users) => {
     $('new-passport-people').innerHTML = users.map(pickRowHtml).join('');
-    status.textContent = "There's nobody else to add yet.";
+    status.textContent = t('people.nobody_to_add');
     status.hidden = users.length > 0;
   });
 });
@@ -750,11 +939,12 @@ bindForm($('new-passport-form'), async () => {
     if (select.value === 'participant') participants.push(personRef(user));
     else if (select.value === 'viewer') viewers.push(personRef(user));
   }
-  if (participants.length + viewers.length > 19) fail('A passport can have at most 20 people');
+  // The owner is one of the people.
+  if (participants.length + viewers.length > MAX_PEOPLE - 1) fail(t('error.people_limit', { max: MAX_PEOPLE }));
   const token = routeToken;
   const detail = await api('POST', '/api/passports', { name, participants, viewers });
   $('new-passport-dialog').close();
-  toast('Passport created');
+  toast(t('toast.passport_created'));
   const id = String(detail.passport.id);
   if (token === routeToken && ID_RE.test(id)) location.hash = `#/passports/${id}`;
 });
@@ -815,12 +1005,16 @@ function localToday() {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
-const isStars = (r) => Number.isInteger(r) && r >= 1 && r <= 5;
+// Whole stars from STARS_MIN to STARS_MAX (single digits, so one character class).
+const STARS_MIN = 1;
+const STARS_MAX = 5;
+const STARS_RE = new RegExp(`^[${STARS_MIN}-${STARS_MAX}]$`);
+const isStars = (r) => Number.isInteger(r) && r >= STARS_MIN && r <= STARS_MAX;
 
 function starsEl(r) {
   const el = textEl('span', '★'.repeat(r) + '☆'.repeat(5 - r), 'stars');
   el.setAttribute('role', 'img');
-  el.setAttribute('aria-label', `${r} out of 5 stars`);
+  el.setAttribute('aria-label', tn('meal.stars_label', r));
   return el;
 }
 
@@ -852,11 +1046,11 @@ async function loadPassport(id, token, more = []) {
 }
 
 function showPassportLoadError(err, id) {
-  if (err.status === 404 && err.message === 'Country not found') {
-    toast('Country not found', 'error');
+  if (err.status === 404 && err.code === 'country_not_found') {
+    toast(t('client.country_not_found'), 'error');
     replaceRoute(`#/passports/${id}`);
   } else if (err.status === 404) {
-    toast('Passport not found', 'error');
+    toast(t('client.passport_not_found'), 'error');
     replaceRoute('#/passports');
   } else {
     showLoadError(err.message);
@@ -910,7 +1104,7 @@ async function enterCountry(id, token, code, _query, intent) {
   }
   if (token !== routeToken) return;
   if (!CODE_RE.test(code) || !countries.has(code)) {
-    toast('Country not found', 'error');
+    toast(t('client.country_not_found'), 'error');
     replaceRoute(`#/passports/${id}`);
     return;
   }
@@ -930,18 +1124,22 @@ const intentStillValid = (intent, token) => token === routeToken && passport !==
 
 // ---- Passport page: progress and country list ----
 
-// How a country's status shows, per display state: [list badge, badge class,
-// map class, map card text]. Fixed literals only; the server's `status` is
-// looked up, never copied. An empty badge means no badge.
+// How a country's status shows, per display state: [list badge text, badge
+// class, map class, map card text]. Fixed keys and classes only; the server's
+// `status` is looked up, never copied. A null badge means no badge.
 const DISPLAY_STATES = Object.freeze({
-  not_started: Object.freeze(['Not started', 'badge-status-none', 'status-none', 'Not started']),
-  your_turn: Object.freeze(['Your turn', 'badge-status-your-turn', 'status-your-turn', 'Your turn']),
-  waiting: Object.freeze(['Waiting on others', 'badge-status-waiting', 'status-waiting', 'Waiting on others']),
-  some: Object.freeze(['Some', 'badge-status-some', 'status-some', 'Some participants']),
-  complete: Object.freeze(['Fully complete', 'badge-status-complete', 'status-complete', 'Fully complete']),
+  not_started: Object.freeze([() => t('status.not_started'), 'badge-status-none', 'status-none',
+    () => t('status.not_started')]),
+  your_turn: Object.freeze([() => t('status.your_turn'), 'badge-status-your-turn', 'status-your-turn',
+    () => t('status.your_turn')]),
+  waiting: Object.freeze([() => t('status.waiting'), 'badge-status-waiting', 'status-waiting',
+    () => t('status.waiting')]),
+  some: Object.freeze([() => t('status.some'), 'badge-status-some', 'status-some', () => t('status.some_participants')]),
+  complete: Object.freeze([() => t('status.complete'), 'badge-status-complete', 'status-complete',
+    () => t('status.complete')]),
   // Personal passports: done or not.
-  done: Object.freeze(['✓ Done', 'badge-status-complete', 'status-complete', 'Done']),
-  not_done: Object.freeze(['', '', 'status-none', 'Not done']),
+  done: Object.freeze([() => t('status.done_badge'), 'badge-status-complete', 'status-complete', () => t('status.done')]),
+  not_done: Object.freeze([null, '', 'status-none', () => t('status.not_done')]),
 });
 const SERVER_STATUSES = Object.freeze({ not_started: true, some: true, complete: true });
 
@@ -970,20 +1168,21 @@ const personalDone = (s) => s.status === 'some' || s.status === 'complete';
 function progressText(progress, rows, personal) {
   const total = Number.isInteger(progress.total) ? progress.total : rows.length;
   // Counted from the rows so a viewer (mine is null) sees it too.
-  if (personal) return `Done: ${rows.filter(personalDone).length} / ${total}`;
-  const mine = Number.isInteger(progress.mine) ? ` · You: ${count(progress.mine)} / ${total}` : '';
-  return `Fully complete: ${count(progress.complete)} / ${total}${mine}`;
+  if (personal) return t('progress.personal', { done: rows.filter(personalDone).length, total });
+  const complete = count(progress.complete);
+  if (Number.isInteger(progress.mine)) return t('progress.shared_mine', { complete, mine: count(progress.mine), total });
+  return t('progress.shared', { complete, total });
 }
 
 function countryRowHtml(s, country, opts, hint) {
   const badges = [];
   const entry = displayEntry(s, opts);
-  if (entry && entry[0]) badges.push([entry[0], entry[1]]);
-  return `<li><button type="button" class="country-row" data-code="${esc(country.code)}">`
-    + `<span class="flag" aria-hidden="true">${esc(flagFor(country.code))}</span>`
-    + `<span class="country-row-name">${esc(country.name)}</span>`
-    + `<span class="badges">${badgesHtml(badges)}</span>`
-    + (hint ? `<span class="country-row-hint">${esc(hint)}</span>` : '')
+  if (entry && entry[0]) badges.push([entry[0](), entry[1]]);
+  return `<li><button type="button" class="country-row" data-code="${esc(country.code)}">` // i18n-ok HTML markup
+    + `<span class="flag" aria-hidden="true">${esc(flagFor(country.code))}</span>` // i18n-ok HTML markup
+    + `<span class="country-row-name">${esc(countryName(country.code, country.name))}</span>` // i18n-ok HTML markup
+    + `<span class="badges">${badgesHtml(badges)}</span>` // i18n-ok HTML markup
+    + (hint ? `<span class="country-row-hint">${esc(hint)}</span>` : '') // i18n-ok HTML markup
     + '</button></li>';
 }
 
@@ -1031,7 +1230,6 @@ const PARTICIPANT_STATUS_KEYS = ['not_started', 'your_turn', 'waiting', 'complet
 const VIEWER_STATUS_KEYS = ['not_started', 'some', 'complete'];
 const PERSONAL_STATUS_KEYS = ['not_started', 'complete'];
 const MINE_KEYS = ['done', 'not_done'];
-const STARS_RE = /^[1-5]$/;
 const MAX_QUERY = 200;
 
 // The open passport list's validated state ({id, opts, q, sort, status, mine,
@@ -1194,7 +1392,7 @@ function countryListHtml(rows, b) {
   for (const r of rows) {
     if (b.sort === 'region' && r.region !== region) {
       region = r.region;
-      if (regions.includes(region)) html += `<li class="region-heading"><h3>${esc(region)}</h3></li>`;
+      if (regions.includes(region)) html += `<li class="region-heading"><h3>${esc(regionName(region))}</h3></li>`; // i18n-ok HTML markup
     }
     const hint = search.on && search.matches ? search.matches.get(r.code) : '';
     html += countryRowHtml(r.s, r.country, b.opts, hint);
@@ -1223,9 +1421,10 @@ function applyBrowse() {
     $('country-list').innerHTML = countryListHtml(rows, b);
   }
   const n = filterCount(b);
-  $('filters-open').textContent = n ? `Filters (${n})` : 'Filters';
+  $('filters-open').textContent = n ? t('browse.filters_count', { count: n }) : t('browse.filters');
   $('browse-count-row').hidden = !(b.q.trim() || n);
-  $('browse-count').textContent = search.pending ? 'Searching…' : `Showing ${rows.length} of ${browseRows.length}`;
+  $('browse-count').textContent = search.pending ? t('browse.searching')
+    : t('browse.showing', { shown: rows.length, total: browseRows.length });
   $('browse-empty').hidden = search.pending || rows.length > 0;
   // A "nothing eligible" message described the list before this change.
   setPickEmpty('');
@@ -1237,8 +1436,8 @@ function showBrowseControls() {
   const personal = browse.opts.personal;
   $('browse-q').value = browse.q;
   $('browse-sort').value = browse.sort;
-  $('sort-completed-desc').textContent = personal ? 'Done (newest)' : 'Completed (newest)';
-  $('sort-completed-asc').textContent = personal ? 'Done (oldest)' : 'Completed (oldest)';
+  $('sort-completed-desc').textContent = personal ? t('browse.sort_done_desc') : t('browse.sort_completed_desc');
+  $('sort-completed-asc').textContent = personal ? t('browse.sort_done_asc') : t('browse.sort_completed_asc');
   $('pick-open').hidden = !canLogMeals();
   showSearchError('');
 }
@@ -1262,7 +1461,7 @@ function clearBrowse() {
   browseRows = [];
   $('browse-q').value = '';
   $('browse-sort').value = 'name';
-  $('filters-open').textContent = 'Filters';
+  $('filters-open').textContent = t('browse.filters');
   $('browse-count').textContent = '';
   $('browse-count-row').hidden = true;
   $('browse-empty').hidden = true;
@@ -1278,12 +1477,12 @@ function hintText(meal) {
   if (!meal || typeof meal !== 'object') return '';
   const str = (v) => (typeof v === 'string' ? v : '');
   const notes = str(meal.notes_excerpt);
-  if (notes) return `Meal notes: ${notes}`;
+  if (notes) return t('search.hint_notes', { notes });
   const dish = str(meal.dish);
   const place = str(meal.place);
-  if (dish && place) return `Meal: ${dish} at ${place}`;
-  if (dish) return `Meal: ${dish}`;
-  return place ? `Meal: at ${place}` : '';
+  if (dish && place) return t('search.hint_dish_place', { dish, place });
+  if (dish) return t('search.hint_dish', { dish });
+  return place ? t('search.hint_place', { place }) : '';
 }
 
 // code -> hint text ('' for a name match); unknown or malformed codes are ignored.
@@ -1300,12 +1499,12 @@ function parseMatches(data) {
 // Searches for browse.q. While a request is in flight the previous results stay
 // listed (none on first load) and the count line says "Searching…".
 async function startSearch() {
-  const t = ++searchToken;
+  const st = ++searchToken;
   const { q } = browse;
   showSearchError('');
   if (!q.trim() || codePoints(q) > MAX_QUERY) {
     search = { on: false, pending: false, matches: null };
-    if (q.trim()) showSearchError('Search can be up to 200 characters');
+    if (q.trim()) showSearchError(t('error.search_length', { max: MAX_QUERY }));
     applyBrowse();
     return;
   }
@@ -1317,8 +1516,8 @@ async function startSearch() {
     data = await api('POST', passportPath(browse.id, '/search'), { q });
   } catch (err) {
     // A response for a page the user has left is ignored, errors included.
-    if (t !== searchToken || token !== routeToken) return;
-    if (err.status === 404 && err.message === 'Passport not found') {
+    if (st !== searchToken || token !== routeToken) return;
+    if (err.status === 404 && err.code === 'passport_not_found') {
       toast(err.message, 'error');
       replaceRoute('#/passports');
       return;
@@ -1328,7 +1527,7 @@ async function startSearch() {
     applyBrowse();
     return;
   }
-  if (t !== searchToken || token !== routeToken || !browse) return;
+  if (st !== searchToken || token !== routeToken || !browse) return;
   search = { on: true, pending: false, matches: parseMatches(data) };
   applyBrowse();
 }
@@ -1378,15 +1577,15 @@ function regionCheck(region) {
   input.name = 'region';
   input.value = region;
   input.checked = browse.region.includes(region);
-  label.append(input, ` ${region}`);
+  label.append(input, ` ${regionName(region)}`);
   return label;
 }
 
 function syncFilters() {
   const form = $('filters-form');
   const { opts } = browse;
-  $('filter-status-none').textContent = opts.personal ? 'Not done' : 'Not started';
-  $('filter-status-complete').textContent = opts.personal ? 'Done' : 'Fully complete';
+  $('filter-status-none').textContent = opts.personal ? t('status.not_done') : t('status.not_started');
+  $('filter-status-complete').textContent = opts.personal ? t('status.done') : t('status.complete');
   for (const box of form.querySelectorAll('input[name="status"]')) {
     box.closest('label').hidden = !opts.statuses.includes(box.value);
     box.checked = browse.status.includes(box.value);
@@ -1531,7 +1730,7 @@ async function loadMap() {
   const key = `${gen}:${token}:${id}`;
   if (mapFetchKey === key) return;
   mapFetchKey = key;
-  showMapStatus('Loading the map…');
+  showMapStatus(t('map.loading'));
   let json = null;
   try {
     const res = await fetch('/map.json', { credentials: 'same-origin' });
@@ -1544,7 +1743,7 @@ async function loadMap() {
   if (gen !== mapGen || token !== routeToken || !browse || browse.id !== id) return;
   const parsed = parseMap(json);
   if (!parsed) {
-    showMapStatus("The map couldn't be loaded.", true);
+    showMapStatus(t('map.load_failed'), true);
     return;
   }
   mapData = parsed;
@@ -1619,8 +1818,8 @@ function showViewMode() {
   const map = browse.view === 'map';
   setViewUi(map);
   const { personal, mine } = browse.opts;
-  $('legend-none').textContent = personal ? 'Not done' : 'Not started';
-  $('legend-complete').textContent = personal ? 'Done' : 'Fully complete';
+  $('legend-none').textContent = personal ? t('status.not_done') : t('status.not_started');
+  $('legend-complete').textContent = personal ? t('status.done') : t('status.complete');
   $('legend-some').hidden = personal || mine;
   $('legend-your-turn').hidden = !mine;
   $('legend-waiting').hidden = !mine;
@@ -1677,7 +1876,7 @@ function colourMap(rows) {
     if (code === pickedCode) picked.push(el);
   }
   for (const el of picked) el.parentNode.append(el);
-  mapSvg.setAttribute('aria-label', passport ? `World map of ${passport.passport.name}` : 'World map');
+  mapSvg.setAttribute('aria-label', passport ? t('map.label_named', { name: passport.passport.name }) : t('map.label'));
 }
 
 // ---- World map: zoom and pan (by the viewBox) ----
@@ -2016,13 +2215,13 @@ function animateMapTo(to) {
   const step = (now) => {
     mapAnimFrame = 0;
     if (gen !== mapGen || token !== routeToken || !mapBuilt) return;
-    const t = Math.min(1, (now - start) / PICK_ZOOM_MS);
-    if (t >= 1) {
+    const k = Math.min(1, (now - start) / PICK_ZOOM_MS);
+    if (k >= 1) {
       mapAnimTo = null;
       setMapView(to.x, to.y, to.w, to.h);
       return;
     }
-    const e = 1 - (1 - t) ** 3;
+    const e = 1 - (1 - k) ** 3;
     const scale = Math.exp(lerp(logFrom, logTo, e));
     const w = width / scale;
     const h = height / scale;
@@ -2070,7 +2269,7 @@ function jumpToEarlyPick() {
 
 function mapCardStatus(row) {
   const entry = row ? displayEntry(row.s, browse.opts) : null;
-  return entry ? entry[3] : '';
+  return entry ? entry[3]() : '';
 }
 
 // Shown at the top of the frame for a tap in its lower half, else at the bottom.
@@ -2081,7 +2280,7 @@ function openMapCard(code, clientY) {
   const rect = mapRect();
   const top = rect ? clientY - rect.top > rect.height / 2 : false;
   $('map-card-flag').textContent = flagFor(code);
-  $('map-card-name').textContent = country.name;
+  $('map-card-name').textContent = countryName(code, country.name);
   $('map-card-status').textContent = mapCardStatus(row);
   const card = $('map-card');
   card.classList.toggle('map-card-top', top);
@@ -2112,7 +2311,7 @@ function resetMapUi() {
   clearMapGesture();
   closeMapCard();
   for (const { el, base } of mapShapes) el.setAttribute('class', base);
-  mapSvg.setAttribute('aria-label', 'World map');
+  mapSvg.setAttribute('aria-label', t('map.label'));
   resetMapView();
   showMapStatus('');
   setViewUi(false);
@@ -2148,7 +2347,8 @@ let pickFrame = 0;
 let pickTiles = [];
 let pickStart = 0;
 
-const FLAP_CHARS = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+// The characters a tile flips through, by code point.
+const FLAP_CHARS = Array.from(t('board.letters'));
 const PICK_TICK_MS = 60;
 // The N = rows x cols tiles settle at the evenly spread times
 // PICK_FIRST_MS + k * PICK_SPREAD_MS / (N - 1) (400 ms to 2500 ms, whatever the
@@ -2160,9 +2360,6 @@ const PICK_SPREAD_MS = 2100;
 const PICK_MIN_COLS = 12;
 const PICK_MAX_COLS = 40;
 const PICK_ROWS = 2;
-// Board-only short forms, used when the full name doesn't fit PICK_ROWS rows at
-// the current width. Fixed text keyed by code; the full name is shown under the board.
-const BOARD_SHORT_NAMES = { CF: 'Central African Rep.', VC: 'St Vincent & Grenadines' };
 const clampInt = (n, lo, hi) => Math.min(hi, Math.max(lo, Number.isFinite(n) ? Math.floor(n) : lo));
 
 const pickButtons = () => [$('pick-log'), $('pick-country'), $('pick-again')];
@@ -2225,9 +2422,7 @@ function setPickEmpty(message) {
 
 function showPickEmpty() {
   const active = search.on || filterCount(browse) > 0;
-  setPickEmpty(active
-    ? "You've done every country that matches. Clear filters to pick from all."
-    : "You've done them all!");
+  setPickEmpty(active ? t('pick.empty_filtered') : t('pick.empty_all'));
 }
 
 // Synchronous: stops the timer and frame, and empties the board.
@@ -2252,7 +2447,7 @@ function stopPick() {
 // words placed left to right with greedy wrap, a word longer than a row
 // broken by characters. Used for the board's size and for placing the pick.
 function layoutName(name, cols) {
-  const words = Array.from(name.normalize('NFC').toLocaleUpperCase('en').normalize('NFC'))
+  const words = Array.from(name.normalize('NFC').toLocaleUpperCase(UPPER_LANG).normalize('NFC'))
     .reduce((acc, ch) => {
       if (ch === ' ') acc.push([]);
       else acc[acc.length - 1].push(ch);
@@ -2302,11 +2497,13 @@ function measureBoard() {
 // Builds rows x cols identical tiles; the character each one settles on (a
 // letter, or a space for a blank) lives only in its JS object. Returns false
 // if the name (or its short form) needs more rows than the board has (then
-// it settles at once).
+// it settles at once). The board-only short form (strings table, by code) is
+// used when the full name doesn't fit; the full name is shown under the board.
 function buildTiles(code, name) {
   const { cols, rows } = measureBoard();
   let layout = layoutName(name, cols);
-  if (layout.length > rows && Object.hasOwn(BOARD_SHORT_NAMES, code)) layout = layoutName(BOARD_SHORT_NAMES[code], cols);
+  const short = boardShort(code);
+  if (layout.length > rows && short !== null) layout = layoutName(short, cols);
   const box = $('pick-tiles');
   pickTiles = [];
   for (let r = 0; r < rows; r += 1) {
@@ -2320,8 +2517,8 @@ function buildTiles(code, name) {
     }
     box.append(rowEl);
   }
-  const times = stopTimes(pickTiles.map((t) => t.ch));
-  pickTiles.forEach((t, i) => { t.stopAt = times[i]; });
+  const times = stopTimes(pickTiles.map((tile) => tile.ch));
+  pickTiles.forEach((tile, i) => { tile.stopAt = times[i]; });
   return layout.length <= rows;
 }
 
@@ -2348,10 +2545,10 @@ function stopTimes(chars) {
 }
 
 // A settled tile: its letter, or blank.
-function settleTile(t) {
-  t.done = true;
-  t.el.textContent = t.ch === ' ' ? '' : t.ch;
-  t.el.className = t.ch === ' ' ? 'pick-tile pick-tile-blank' : 'pick-tile';
+function settleTile(tile) {
+  tile.done = true;
+  tile.el.textContent = tile.ch === ' ' ? '' : tile.ch;
+  tile.el.className = tile.ch === ' ' ? 'pick-tile pick-tile-blank' : 'pick-tile'; // i18n-ok CSS class names
 }
 
 function startPick(code) {
@@ -2360,7 +2557,7 @@ function startPick(code) {
   const country = countriesCache.get(code);
   pickCurrent = { id: browse.id, code };
   lastPick = { id: browse.id, code };
-  const fits = buildTiles(code, country.name);
+  const fits = buildTiles(code, countryName(code, country.name));
   if (!fits || matchMedia('(prefers-reduced-motion: reduce)').matches) {
     settlePick();
     return;
@@ -2382,16 +2579,16 @@ function tickPick(gen) {
   const random = new Uint8Array(pickTiles.length);
   crypto.getRandomValues(random);
   let left = 0;
-  pickTiles.forEach((t, i) => {
-    if (t.done) return;
-    if (elapsed >= t.stopAt) {
-      settleTile(t);
+  pickTiles.forEach((tile, i) => {
+    if (tile.done) return;
+    if (elapsed >= tile.stopAt) {
+      settleTile(tile);
       return;
     }
     left += 1;
-    t.el.textContent = FLAP_CHARS[random[i] % FLAP_CHARS.length];
+    tile.el.textContent = FLAP_CHARS[random[i] % FLAP_CHARS.length];
     // Two identical animations under different names restart it on every flap.
-    t.el.className = t.el.className === 'pick-tile flip-a' ? 'pick-tile flip-b' : 'pick-tile flip-a';
+    tile.el.className = tile.el.className === 'pick-tile flip-a' ? 'pick-tile flip-b' : 'pick-tile flip-a'; // i18n-ok CSS class names
   });
   if (left === 0) settlePick();
 }
@@ -2410,13 +2607,15 @@ function settlePick() {
     stopPick();
     return;
   }
-  for (const t of pickTiles) settleTile(t);
-  const region = typeof country.region === 'string' ? country.region : '';
+  for (const tile of pickTiles) settleTile(tile);
+  const region = typeof country.region === 'string' ? regionName(country.region) : '';
+  const name = countryName(pickCurrent.code, country.name);
   $('pick-flag').textContent = flagFor(pickCurrent.code);
   // The full name, also when the board shows a short form.
-  $('pick-region').textContent = region ? `${country.name} · ${region}` : country.name;
+  $('pick-region').textContent = region ? t('pick.place', { country: name, region }) : name;
   $('pick-place').classList.remove('is-pending');
-  $('pick-live').textContent = region ? `Next stop: ${country.name}, ${region}` : `Next stop: ${country.name}`;
+  $('pick-live').textContent = region ? t('pick.live_region', { country: name, region })
+    : t('pick.live', { country: name });
   $('pick-board').disabled = true;
   zoomMapToPick(pickCurrent.code);
   pickFrame = requestAnimationFrame(() => {
@@ -2517,51 +2716,61 @@ const canLogMeals = () => passport !== null
 // user's (never matched by name); anything ambiguous gets the general line.
 function someStatusText(participants) {
   const role = passport ? passport.passport.role : '';
-  if (role !== 'owner' && role !== 'participant') return 'Some participants have eaten here';
+  if (role !== 'owner' && role !== 'participant') return t('countrypage.status_some');
   const me = participants.filter((p) => p && Number.isInteger(p.id) && state.user && p.id === state.user.id);
-  if (me.length !== 1 || typeof me[0].done !== 'boolean') return 'Some participants have eaten here';
-  return me[0].done ? "Waiting on others: you've eaten here" : 'Your turn: others have eaten here';
+  if (me.length !== 1 || typeof me[0].done !== 'boolean') return t('countrypage.status_some');
+  return me[0].done ? t('countrypage.status_waiting') : t('countrypage.status_your_turn');
 }
 
 function countryStatusText(data, participants, personal) {
   if (personal) {
     const owner = participants[0];
-    if (!owner || owner.done !== true) return 'Not done yet';
+    if (!owner || owner.done !== true) return t('countrypage.status_not_done');
     const date = formatDay(owner.completed_on);
-    return date ? `Done on ${date}` : 'Done';
+    return date ? t('countrypage.status_done_on', { date }) : t('status.done');
   }
   if (data.status === 'complete') {
     const date = formatDay(data.completed_on);
-    return date ? `Fully complete on ${date}` : 'Fully complete';
+    return date ? t('countrypage.status_complete_on', { date }) : t('status.complete');
   }
   if (data.status === 'some') return someStatusText(participants);
-  if (data.status === 'not_started') return 'Not started';
+  if (data.status === 'not_started') return t('status.not_started');
   return '';
+}
+
+// A participant's name, marked when their account is disabled.
+const memberName = (m) => (m.inactive ? t('person.inactive', { name: m.display_name }) : m.display_name);
+
+function doneText(m) {
+  if (m.done !== true) return t('countrypage.person_not_yet');
+  const date = formatDay(m.completed_on);
+  return date ? t('countrypage.person_done_on', { date }) : t('status.done');
 }
 
 function countryPersonHtml(m) {
   const done = m.done === true;
-  const doneText = done ? `Done ${formatDay(m.completed_on)}`.trim() : 'Not yet';
-  return '<li class="person-row"><div class="person-text">'
-    + `<span class="person-name">${esc(m.display_name)}${m.inactive ? ' (inactive)' : ''}</span>`
-    + `<span class="person-username">@${esc(m.username)}</span></div>`
-    + `<span class="done-state${done ? ' done-mark' : ' muted'}">${esc(doneText)}</span>`
+  const name = memberName(m);
+  const doneLabel = doneText(m);
+  return '<li class="person-row"><div class="person-text">' // i18n-ok HTML markup
+    + `<span class="person-name">${esc(name)}</span>` // i18n-ok HTML markup
+    + `<span class="person-username">@${esc(m.username)}</span></div>` // i18n-ok HTML markup
+    + `<span class="done-state${done ? ' done-mark' : ' muted'}">${esc(doneLabel)}</span>` // i18n-ok HTML markup
     + '</li>';
 }
 
-function mealButton(label, action, id, date) {
-  const button = textEl('button', label, 'btn');
+function mealButton(text, label, action, id) {
+  const button = textEl('button', text, 'btn');
   button.type = 'button';
   button.dataset.mealAction = action;
   button.dataset.mealId = id;
-  button.setAttribute('aria-label', date ? `${label} meal from ${date}` : `${label} meal`);
+  button.setAttribute('aria-label', label);
   return button;
 }
 
 // Built with textContent throughout; notes keep their line breaks via CSS.
 function mealCard(m) {
   const li = document.createElement('li');
-  li.className = 'card meal-card';
+  li.className = 'card meal-card'; // i18n-ok CSS class names
   const date = formatDay(m.eaten_on);
   const head = document.createElement('div');
   head.className = 'meal-head';
@@ -2570,13 +2779,18 @@ function mealCard(m) {
   li.append(head);
   if (m.user) li.append(textEl('p', personLabel(m.user), 'muted'));
   if (typeof m.dish === 'string' && m.dish) li.append(textEl('p', m.dish, 'meal-dish'));
-  if (typeof m.place === 'string' && m.place) li.append(textEl('p', `at ${m.place}`, 'muted'));
+  if (typeof m.place === 'string' && m.place) li.append(textEl('p', t('meal.at_place', { place: m.place }), 'muted'));
   if (typeof m.notes === 'string' && m.notes) li.append(textEl('p', m.notes, 'meal-notes'));
   if (m.mine === true) {
     const actions = document.createElement('div');
     actions.className = 'actions';
     const id = String(m.id);
-    actions.append(mealButton('Edit', 'edit', id, date), mealButton('Delete', 'delete', id, date));
+    const editLabel = date ? t('meal.edit_label_dated', { date }) : t('meal.edit_label');
+    const deleteLabel = date ? t('meal.delete_label_dated', { date }) : t('meal.delete_label');
+    actions.append(
+      mealButton(t('meal.edit'), editLabel, 'edit', id),
+      mealButton(t('meal.delete'), deleteLabel, 'delete', id),
+    );
     li.append(actions);
   }
   return li;
@@ -2587,14 +2801,14 @@ function showCountry(code, data, countries) {
   const personal = passport.passport.is_personal === true;
   const participants = Array.isArray(data.participants) ? data.participants : [];
   const meals = (Array.isArray(data.meals) ? data.meals : []).filter((m) => m && ID_RE.test(String(m.id)));
-  countryDetail = { code, name: country.name, meals };
+  countryDetail = { code, name: countryName(code, country.name), meals };
   $('country-flag').textContent = flagFor(code);
-  $('country-name').textContent = country.name;
-  $('country-region').textContent = typeof country.region === 'string' ? country.region : '';
+  $('country-name').textContent = countryDetail.name;
+  $('country-region').textContent = typeof country.region === 'string' ? regionName(country.region) : '';
   $('country-status').textContent = countryStatusText(data, participants, personal);
   const avg = data.avg_rating;
   const hasAvg = typeof avg === 'number' && Number.isFinite(avg);
-  $('country-avg').textContent = hasAvg ? `Average ★ ${avg.toFixed(1)}` : '';
+  $('country-avg').textContent = hasAvg ? t('countrypage.average', { avg: avg.toFixed(1) }) : '';
   $('country-avg').hidden = !hasAvg;
   $('country-people-card').hidden = personal;
   $('country-participants').innerHTML = personal ? '' : participants.map(countryPersonHtml).join('');
@@ -2618,7 +2832,7 @@ async function refreshCountry(token) {
   } catch (err) {
     if (err instanceof QuietError) return;
     // A gone passport has already moved the page on (new routeToken); say why anyway.
-    const gone = err.status === 404 && err.message === 'Passport not found';
+    const gone = err.status === 404 && err.code === 'passport_not_found';
     if (gone || token === routeToken) toast(err.message, 'error');
     return;
   }
@@ -2652,7 +2866,7 @@ function openMealDialog(meal) {
   const el = $('meal-form').elements;
   const today = localToday();
   const date = meal && typeof meal.eaten_on === 'string' && DAY_RE.test(meal.eaten_on) ? meal.eaten_on : today;
-  $('meal-title').textContent = meal ? 'Edit meal' : `Log a meal — ${countryDetail.name}`;
+  $('meal-title').textContent = meal ? t('meal.edit_title') : t('meal.log_title', { country: countryDetail.name });
   // The server allows up to a day ahead (time zones), so keep a stored later date editable.
   el.eaten_on.max = date > today ? date : today;
   el.eaten_on.value = date;
@@ -2667,28 +2881,43 @@ function openMealDialog(meal) {
 $('log-meal-open').addEventListener('click', () => openMealDialog(null));
 
 // Mirrors contract §5; the server is authoritative and its message is shown on error.
-function checkMealText(value, label) {
+const MEAL_TEXT_MAX = 100;
+const NOTES_MAX = 2000;
+const MEAL_FIRST_YEAR = 1900;
+const MEAL_FIRST_DAY = `${MEAL_FIRST_YEAR}-01-01`;
+const MEAL_TEXT_MESSAGES = Object.freeze({
+  dish: Object.freeze({
+    length: () => t('error.dish_length', { max: MEAL_TEXT_MAX }),
+    chars: () => t('error.dish_chars'),
+  }),
+  place: Object.freeze({
+    length: () => t('error.place_length', { max: MEAL_TEXT_MAX }),
+    chars: () => t('error.place_chars'),
+  }),
+});
+
+function checkMealText(value, messages) {
   const s = value.normalize('NFC').trim();
-  if (codePoints(s) > 100) fail(`${label} can be up to 100 characters`);
-  if (BAD_NAME_CHAR_RE.test(s)) fail(`${label} contains characters that aren't allowed`);
+  if (codePoints(s) > MEAL_TEXT_MAX) fail(messages.length());
+  if (BAD_NAME_CHAR_RE.test(s)) fail(messages.chars());
 }
 
 function checkNotes(value) {
   const s = value.replace(/\r\n?/g, '\n').normalize('NFC').trim();
-  if (codePoints(s) > 2000) fail('Notes can be up to 2,000 characters');
-  if (BAD_NAME_CHAR_RE.test(s.replace(/\n/g, ''))) fail("Notes contain characters that aren't allowed");
+  if (codePoints(s) > NOTES_MAX) fail(t('error.notes_length'));
+  if (BAD_NAME_CHAR_RE.test(s.replace(/\n/g, ''))) fail(t('error.notes_chars'));
 }
 
 function readMealForm(form) {
   const el = form.elements;
   const eatenOn = el.eaten_on.value;
-  if (!DAY_RE.test(eatenOn) || eatenOn < '1900-01-01' || eatenOn > el.eaten_on.max) {
-    fail('Choose a date between 1900 and today');
+  if (!DAY_RE.test(eatenOn) || eatenOn < MEAL_FIRST_DAY || eatenOn > el.eaten_on.max) {
+    fail(t('error.date_range', { year: MEAL_FIRST_YEAR }));
   }
-  checkMealText(el.dish.value, '"What you ate"');
-  checkMealText(el.place.value, '"Where"');
+  checkMealText(el.dish.value, MEAL_TEXT_MESSAGES.dish);
+  checkMealText(el.place.value, MEAL_TEXT_MESSAGES.place);
   const rating = form.querySelector('input[name="rating"]:checked')?.value ?? 'none';
-  if (rating !== 'none' && !/^[1-5]$/.test(rating)) fail('Stars must be 1 to 5');
+  if (rating !== 'none' && !STARS_RE.test(rating)) fail(t('error.rating_range', { min: STARS_MIN, max: STARS_MAX }));
   checkNotes(el.notes.value);
   return {
     eaten_on: eatenOn,
@@ -2700,7 +2929,7 @@ function readMealForm(form) {
 }
 
 bindForm($('meal-form'), async (form) => {
-  if (!countryDetail) fail('Country not found');
+  if (!countryDetail) fail(t('client.country_not_found'), 'country_not_found');
   const body = readMealForm(form);
   const { code } = countryDetail;
   const token = routeToken;
@@ -2709,14 +2938,14 @@ bindForm($('meal-form'), async (form) => {
   const dt = dialogToken;
   if (mealEdit) {
     const id = String(mealEdit.id);
-    if (!ID_RE.test(id)) fail('Meal not found');
+    if (!ID_RE.test(id)) fail(t('client.meal_not_found'), 'meal_not_found');
     await passportRequest('PATCH', `/meals/${id}`, body);
   } else {
-    if (!CODE_RE.test(code)) fail('Country not found');
+    if (!CODE_RE.test(code)) fail(t('client.country_not_found'), 'country_not_found');
     await passportRequest('POST', `/countries/${code}/meals`, body);
   }
   if (dt === dialogToken) mealDialog.close();
-  toast('Meal saved');
+  toast(t('toast.meal_saved'));
   if (token === routeToken) refreshCountry(token);
 });
 
@@ -2727,37 +2956,39 @@ function openDeleteMeal(meal) {
   mealDelete = meal;
   const date = formatDay(meal.eaten_on);
   const last = countryDetail.meals.filter((m) => m.mine === true).length === 1;
-  $('delete-meal-text').textContent = date ? `Delete this meal from ${date}?` : 'Delete this meal?';
-  $('delete-meal-last').textContent = last ? `${countryDetail.name} will no longer count as done for you.` : '';
+  $('delete-meal-text').textContent = date ? t('meal.delete_text_dated', { date }) : t('meal.delete_text');
+  $('delete-meal-last').textContent = last ? t('meal.delete_last', { country: countryDetail.name }) : '';
   $('delete-meal-last').hidden = !last;
   deleteMealDialog.showModal();
 }
 
 bindForm($('delete-meal-form'), async () => {
-  if (!mealDelete) fail('Meal not found');
+  if (!mealDelete) fail(t('client.meal_not_found'), 'meal_not_found');
   const id = String(mealDelete.id);
-  if (!ID_RE.test(id)) fail('Meal not found');
+  if (!ID_RE.test(id)) fail(t('client.meal_not_found'), 'meal_not_found');
   const token = routeToken;
   const dt = dialogToken;
   // The response's still_done isn't needed: the country page is re-fetched below.
   await passportRequest('POST', `/meals/${id}/delete`);
   if (dt === dialogToken) deleteMealDialog.close();
-  toast('Meal deleted');
+  toast(t('toast.meal_deleted'));
   if (token === routeToken) refreshCountry(token);
 });
 
 function personRowHtml(m, removable) {
   const badges = [];
-  if (m.is_owner) badges.push(['Owner', 'badge-accent']);
-  if (m.id === state.user.id) badges.push(['You', '']);
-  const remove = `Remove ${m.display_name} @${m.username}`;
-  return '<li class="person-row"><div class="person-text">'
-    + `<span class="person-name">${esc(m.display_name)}${m.inactive ? ' (inactive)' : ''}</span>`
-    + `<span class="person-username">@${esc(m.username)}</span>`
-    + (badges.length ? `<span class="badges">${badgesHtml(badges)}</span>` : '')
+  if (m.is_owner) badges.push([t('role.owner'), 'badge-accent']);
+  if (m.id === state.user.id) badges.push([t('people.you'), '']);
+  const name = memberName(m);
+  const remove = t('people.remove_label', { name: m.display_name, username: m.username });
+  const removeText = t('people.remove');
+  return '<li class="person-row"><div class="person-text">' // i18n-ok HTML markup
+    + `<span class="person-name">${esc(name)}</span>` // i18n-ok HTML markup
+    + `<span class="person-username">@${esc(m.username)}</span>` // i18n-ok HTML markup
+    + (badges.length ? `<span class="badges">${badgesHtml(badges)}</span>` : '') // i18n-ok HTML markup
     + '</div>'
     + (removable
-      ? `<button type="button" class="btn" data-remove-user-id="${esc(String(m.id))}" aria-label="${esc(remove)}">Remove</button>`
+      ? `<button type="button" class="btn" data-remove-user-id="${esc(String(m.id))}" aria-label="${esc(remove)}">${esc(removeText)}</button>` // i18n-ok HTML markup
       : '')
     + '</li>';
 }
@@ -2792,14 +3023,14 @@ function showPassportIfCurrent(token, detail) {
   if (token === routeToken) showPassport(detail);
 }
 
-// These errors mean the page is out of date (ownership, membership, role or
-// meals changed elsewhere); the current page is re-fetched.
+// These errors (status, code) mean the page is out of date (ownership,
+// membership, role or meals changed elsewhere); the current page is re-fetched.
 const STALE_ERRORS = [
-  [403, 'Only the owner can do that'],
-  [404, 'Not in this passport'],
-  [409, "The owner can't leave. Delete the passport instead."],
-  [404, 'Meal not found'],
-  [403, 'Only participants can log meals'],
+  [403, 'owner_only'],
+  [404, 'not_member'],
+  [409, 'owner_leave'],
+  [404, 'meal_not_found'],
+  [403, 'participants_only'],
 ];
 
 // A request on the open passport. A stale page is re-fetched; a passport that
@@ -2813,10 +3044,10 @@ async function passportRequest(method, suffix, body) {
     return await api(method, passportPath(passport.passport.id, suffix), body);
   } catch (err) {
     if (token === routeToken) {
-      if (err.status === 404 && err.message === 'Passport not found') {
+      if (err.status === 404 && err.code === 'passport_not_found') {
         closeDialogs();
         replaceRoute('#/passports');
-      } else if (STALE_ERRORS.some(([status, message]) => err.status === status && err.message === message)) {
+      } else if (STALE_ERRORS.some(([status, code]) => err.status === status && err.code === code)) {
         closeDialogs();
         render();
       }
@@ -2832,13 +3063,13 @@ $('make-default').addEventListener('click', async (event) => {
   const token = routeToken;
   const id = passport.passport.id;
   try {
-    if (!ID_RE.test(String(id))) fail('Passport not found');
+    if (!ID_RE.test(String(id))) fail(t('client.passport_not_found'), 'passport_not_found');
     await api('PATCH', '/api/account', { default_passport_id: id });
     if (token === routeToken) {
       passport.passport.is_default = true;
       showPassport(passport);
     }
-    toast('Default passport set');
+    toast(t('toast.default_set'));
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -2862,7 +3093,7 @@ bindDialog('add-person-open', 'add-person-dialog', () => {
     const members = new Set([...passport.participants, ...passport.viewers].map((m) => m.id));
     const candidates = users.filter((u) => !members.has(u.id));
     if (!candidates.length) {
-      status.textContent = 'Everyone is already in this passport.';
+      status.textContent = t('people.everyone_added');
       status.hidden = false;
       return;
     }
@@ -2875,14 +3106,14 @@ bindDialog('add-person-open', 'add-person-dialog', () => {
 
 bindForm($('add-person-form'), async (form) => {
   const user = pickUsers.find((u) => String(u.id) === $('add-person-user').value);
-  if (!user) fail('Choose people from the list');
+  if (!user) fail(t('error.choose_people'));
   const role = form.querySelector('input[name="role"]:checked')?.value;
-  if (role !== 'participant' && role !== 'viewer') fail('Role must be participant or viewer');
+  if (role !== 'participant' && role !== 'viewer') fail(t('error.role_invalid'));
   const token = routeToken;
   const detail = await passportRequest('POST', '/members', { ...personRef(user), role });
   $('add-person-dialog').close();
   showPassportIfCurrent(token, detail);
-  toast(`${user.display_name} added`);
+  toast(t('toast.person_added', { name: user.display_name }));
 });
 
 // ---- Passports: remove person and leave (one shared confirmation dialog) ----
@@ -2912,14 +3143,14 @@ $('people-card').addEventListener('click', (event) => {
   const member = participant || passport.viewers.find((m) => String(m.id) === uid);
   if (!member) return;
   const text = participant
-    ? `Remove ${personLabel(member)}? Their meals in this passport will be deleted.`
-    : `Remove ${personLabel(member)}? They'll no longer see this passport.`;
-  openPassportConfirm('Remove person', text, 'Remove', async () => {
+    ? t('people.remove_participant_text', { person: personLabel(member) })
+    : t('people.remove_viewer_text', { person: personLabel(member) });
+  openPassportConfirm(t('people.remove_title'), text, t('people.remove'), async () => {
     const token = routeToken;
     const detail = await passportRequest('POST', `/members/${uid}/remove`);
     passportConfirmDialog.close();
     showPassportIfCurrent(token, detail);
-    toast('Removed');
+    toast(t('toast.removed'));
   });
 });
 
@@ -2927,14 +3158,14 @@ $('leave-open').addEventListener('click', () => {
   if (!passport) return;
   const { name, role } = passport.passport;
   const text = role === 'viewer'
-    ? `Leave ${name}? You'll no longer see it.`
-    : `Leave ${name}? Your meals in it will be deleted.`;
-  openPassportConfirm('Leave passport', text, 'Leave', async () => {
+    ? t('people.leave_viewer_text', { name })
+    : t('people.leave_participant_text', { name });
+  openPassportConfirm(t('people.leave_passport'), text, t('people.leave'), async () => {
     const token = routeToken;
     await passportRequest('POST', '/leave');
     passportConfirmDialog.close();
     if (token === routeToken) replaceRoute('#/');
-    toast(`You left ${name}`);
+    toast(t('toast.left', { name }));
   });
 });
 
@@ -2951,15 +3182,14 @@ bindForm($('rename-form'), async () => {
   const detail = await passportRequest('PATCH', '', { name });
   $('rename-dialog').close();
   showPassportIfCurrent(token, detail);
-  toast('Passport renamed');
+  toast(t('toast.passport_renamed'));
 });
 
 const typedNameMatches = () => passport !== null
   && $('delete-passport-confirm').value.normalize('NFC').trim() === passport.passport.name;
 
 bindDialog('delete-passport-open', 'delete-passport-dialog', () => {
-  $('delete-passport-text').textContent = `Permanently delete ${passport.passport.name}? `
-    + "Everyone's meals in it will be deleted. This can't be undone.";
+  $('delete-passport-text').textContent = t('people.delete_text', { name: passport.passport.name });
   $('delete-passport-submit').disabled = true;
 });
 
@@ -2968,12 +3198,12 @@ $('delete-passport-confirm').addEventListener('input', () => {
 });
 
 bindForm($('delete-passport-form'), async () => {
-  if (!typedNameMatches()) fail('Type the passport name to confirm');
+  if (!typedNameMatches()) fail(t('error.confirm_passport_name'));
   const token = routeToken;
   await passportRequest('POST', '/delete', { confirm_name: $('delete-passport-confirm').value });
   $('delete-passport-dialog').close();
   if (token === routeToken) replaceRoute('#/');
-  toast('Passport deleted');
+  toast(t('toast.passport_deleted'));
 });
 
 // ---- Forced password change (temporary password set by an admin) ----
@@ -2981,38 +3211,38 @@ bindForm($('delete-passport-form'), async () => {
 bindForm($('force-password-form'), async (form) => {
   const current = form.elements.current_password.value;
   const next = form.elements.new_password.value;
-  if (!current) fail('Enter your temporary password');
+  if (!current) fail(t('client.temp_password_empty'));
   checkNewPassword(next);
-  if (next !== form.elements.confirm_password.value) fail("Passwords don't match");
+  if (next !== form.elements.confirm_password.value) fail(t('client.passwords_mismatch'));
   await api('POST', '/api/account/password', { current_password: current, new_password: next });
   form.reset();
   // The change succeeded even if this re-fetch fails, so clear the flag locally then.
   if (!(await refreshSession()) && state.user) state.user.must_change_password = false;
   history.replaceState(null, '', '#/');
   render();
-  toast('Password changed');
+  toast(t('toast.password_changed'));
 });
 
 // ---- Admin: user list ----
 
 function userBadges(u) {
   const badges = [];
-  if (u.id === state.user.id) badges.push(['You', '']);
-  if (u.is_admin) badges.push(['Admin', 'badge-accent']);
-  if (u.disabled) badges.push(['Disabled', 'badge-warn']);
-  if (u.locked) badges.push(['Locked', 'badge-warn']);
+  if (u.id === state.user.id) badges.push([t('people.you'), '']);
+  if (u.is_admin) badges.push([t('admin.badge_admin'), 'badge-accent']);
+  if (u.disabled) badges.push([t('admin.badge_disabled'), 'badge-warn']);
+  if (u.locked) badges.push([t('admin.badge_locked'), 'badge-warn']);
   // An expired temporary password implies "must change", so show only the stronger badge.
-  if (u.temp_password_expired) badges.push(['Temporary password expired', 'badge-warn']);
-  else if (u.must_change_password) badges.push(['Must change password', '']);
+  if (u.temp_password_expired) badges.push([t('admin.badge_temp_expired'), 'badge-warn']);
+  else if (u.must_change_password) badges.push([t('admin.badge_must_change'), '']);
   return badges;
 }
 
 function userCardHtml(u) {
   const badges = badgesHtml(userBadges(u));
-  return `<li><button type="button" class="list-card" data-user-id="${esc(String(u.id))}">`
-    + `<span class="list-card-title">${esc(u.display_name)}</span>`
-    + `<span class="list-card-sub">@${esc(u.username)}</span>`
-    + (badges ? `<span class="badges">${badges}</span>` : '')
+  return `<li><button type="button" class="list-card" data-user-id="${esc(String(u.id))}">` // i18n-ok HTML markup
+    + `<span class="list-card-title">${esc(u.display_name)}</span>` // i18n-ok HTML markup
+    + `<span class="list-card-sub">@${esc(u.username)}</span>` // i18n-ok HTML markup
+    + (badges ? `<span class="badges">${badges}</span>` : '') // i18n-ok HTML markup
     + '</button></li>';
 }
 
@@ -3052,7 +3282,7 @@ bindForm($('add-user-form'), async (form) => {
   });
   form.reset();
   $('add-user-dialog').close();
-  toast(`User ${data.user.display_name} created`);
+  toast(t('toast.user_created', { name: data.user.display_name }));
   // Refresh the list only if the admin is still on it.
   if (token === routeToken) enterAdmin(null, token);
 });
@@ -3083,16 +3313,16 @@ document.querySelectorAll('[data-generate]').forEach((button) => {
 
 let adminUser = null;
 
-const yesNo = (v) => (v ? 'Yes' : 'No');
+const yesNo = (v) => (v ? t('common.yes') : t('common.no'));
 
 function formatDate(seconds) {
-  return typeof seconds === 'number' ? new Date(seconds * 1000).toLocaleDateString() : 'Never';
+  return typeof seconds === 'number' ? new Date(seconds * 1000).toLocaleDateString() : t('admin.never');
 }
 
 // API paths are built only from an id that matches the id pattern.
 function adminUserPath(suffix = '') {
   const id = String(adminUser.id);
-  if (!ID_RE.test(id)) fail('Invalid user id');
+  if (!ID_RE.test(id)) fail(t('client.invalid_user_id'));
   return `/api/admin/users/${id}${suffix}`;
 }
 
@@ -3114,7 +3344,7 @@ async function enterAdminUser(id, token) {
   if (token !== routeToken) return;
   const user = users.find((u) => String(u.id) === id);
   if (!user) {
-    toast('User not found', 'error');
+    toast(t('client.user_not_found'), 'error');
     navigate('#/admin');
     return;
   }
@@ -3127,11 +3357,11 @@ function showAdminUser(u) {
   const self = u.id === state.user.id;
   $('admin-user-title').textContent = u.display_name;
   $('au-username').textContent = u.username;
-  $('au-role').textContent = u.is_admin ? 'Admin' : 'User';
-  $('au-status').textContent = u.disabled ? 'Disabled' : 'Active';
+  $('au-role').textContent = u.is_admin ? t('admin.role_admin') : t('admin.role_user');
+  $('au-status').textContent = u.disabled ? t('admin.status_disabled') : t('admin.status_active');
   $('au-locked').textContent = yesNo(u.locked);
   $('au-must-change').textContent = u.temp_password_expired
-    ? 'Yes, temporary password expired' : yesNo(u.must_change_password);
+    ? t('admin.must_change_expired') : yesNo(u.must_change_password);
   $('au-created').textContent = formatDate(u.created_at);
   $('au-last-active').textContent = formatDate(u.last_active_at);
 
@@ -3167,12 +3397,11 @@ bindForm($('edit-name-form'), async (form) => {
   }
   $('edit-name-dialog').close();
   showAdminUserIfCurrent(token, user);
-  toast('Display name saved');
+  toast(t('toast.display_name_saved'));
 });
 
 bindDialog('au-reset', 'reset-dialog', () => {
-  $('reset-text').textContent = `Set a new temporary password for ${adminUser.display_name}. `
-    + "They'll be logged out everywhere and asked to choose a new password when they log in.";
+  $('reset-text').textContent = t('admin.reset_text', { name: adminUser.display_name });
 });
 
 bindForm($('reset-form'), async (form) => {
@@ -3183,7 +3412,7 @@ bindForm($('reset-form'), async (form) => {
   form.reset();
   $('reset-dialog').close();
   showAdminUserIfCurrent(token, user);
-  toast('Password reset');
+  toast(t('toast.password_reset'));
 });
 
 $('au-unlock').addEventListener('click', async (event) => {
@@ -3194,7 +3423,7 @@ $('au-unlock').addEventListener('click', async (event) => {
   try {
     const { user } = await api('POST', adminUserPath('/unlock'));
     showAdminUserIfCurrent(token, user);
-    toast('Unlocked');
+    toast(t('toast.unlocked'));
   } catch (err) {
     toast(err.message, 'error');
   } finally {
@@ -3205,23 +3434,32 @@ $('au-unlock').addEventListener('click', async (event) => {
 // Disable, Enable, Make admin and Remove admin share one confirmation dialog.
 const CONFIRM_ACTIONS = {
   'au-disable': {
-    title: 'Disable account', button: 'Disable', path: '/disable', done: 'Disabled',
-    text: (n) => `Disable ${n}? They'll be logged out everywhere and won't be able to log in. Nothing is deleted. `
-      + 'Passports they own will be handed over to another active participant, if there is one.',
+    title: () => t('admin.disable_title'),
+    button: () => t('admin.disable'),
+    path: '/disable',
+    done: () => t('toast.disabled'),
+    text: (name) => t('admin.disable_text', { name }),
   },
   'au-enable': {
-    title: 'Re-enable account', button: 'Enable', path: '/enable', done: 'Enabled',
-    text: (n) => `Re-enable ${n}? They'll be able to log in again with their existing password.`,
+    title: () => t('admin.enable_title'),
+    button: () => t('admin.enable'),
+    path: '/enable',
+    done: () => t('toast.enabled'),
+    text: (name) => t('admin.enable_text', { name }),
   },
   'au-promote': {
-    title: 'Make admin', button: 'Make admin', path: '/promote', done: 'Now an admin',
-    text: (n) => `Make ${n} an admin? Admins can create, disable and delete accounts and reset passwords.`,
+    title: () => t('admin.promote'),
+    button: () => t('admin.promote'),
+    path: '/promote',
+    done: () => t('toast.promoted'),
+    text: (name) => t('admin.promote_text', { name }),
   },
   'au-demote': {
-    title: 'Remove admin', button: 'Remove admin', path: '/demote', done: 'No longer an admin',
-    text: (n, self) => (self
-      ? "Remove your own admin rights? You'll lose access to this screen."
-      : `Remove admin rights from ${n}?`),
+    title: () => t('admin.demote'),
+    button: () => t('admin.demote'),
+    path: '/demote',
+    done: () => t('toast.demoted'),
+    text: (name, self) => (self ? t('admin.demote_self_text') : t('admin.demote_text', { name })),
   },
 };
 
@@ -3232,9 +3470,9 @@ confirmDialog.addEventListener('close', () => { confirmAction = null; });
 for (const [buttonId, action] of Object.entries(CONFIRM_ACTIONS)) {
   $(buttonId).addEventListener('click', () => {
     confirmAction = action;
-    $('confirm-title').textContent = action.title;
+    $('confirm-title').textContent = action.title();
     $('confirm-text').textContent = action.text(adminUser.display_name, adminUser.id === state.user.id);
-    $('confirm-submit').textContent = action.button;
+    $('confirm-submit').textContent = action.button();
     confirmDialog.showModal();
   });
 }
@@ -3252,20 +3490,18 @@ bindForm($('confirm-form'), async () => {
     // (the router moves them off any admin route).
     if (token === routeToken) navigate('#/');
     else render();
-    toast("You're no longer an admin");
+    toast(t('toast.admin_lost'));
     return;
   }
   showAdminUserIfCurrent(token, user);
-  toast(action.done);
+  toast(action.done());
 });
 
 const deleteMatches = () => $('admin-delete-confirm').value.toLowerCase() === adminUser.username.toLowerCase();
 
 bindDialog('au-delete', 'admin-delete-dialog', () => {
-  $('admin-delete-text').textContent = `Permanently delete ${adminUser.display_name}'s account? `
-    + "Their passports will be handed over to another participant or deleted, and they'll be removed "
-    + "from passports shared with them, along with their meals. This can't be undone.";
-  $('admin-delete-label').textContent = `Type ${adminUser.username} to confirm`;
+  $('admin-delete-text').textContent = t('admin.delete_text', { name: adminUser.display_name });
+  $('admin-delete-label').textContent = t('admin.delete_label', { username: adminUser.username });
   $('admin-delete-submit').disabled = true;
 });
 
@@ -3274,12 +3510,12 @@ $('admin-delete-confirm').addEventListener('input', () => {
 });
 
 bindForm($('admin-delete-form'), async (form) => {
-  if (!deleteMatches()) fail('Type the username to confirm');
+  if (!deleteMatches()) fail(t('error.confirm_username'));
   const token = routeToken;
   await api('POST', adminUserPath('/delete'), { confirm_username: form.elements.confirm_username.value });
   $('admin-delete-dialog').close();
   if (token === routeToken) navigate('#/admin');
-  toast('Account deleted');
+  toast(t('toast.account_deleted'));
 });
 
 // ---- Start ----
@@ -3290,4 +3526,5 @@ window.addEventListener('hashchange', () => {
 
 $('load-retry').addEventListener('click', loadSession);
 
+applyPageStrings();
 loadSession();

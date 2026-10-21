@@ -355,7 +355,7 @@ class CatchAllTests(ServerTestCase):
         self.add_route("/api/boom", {"GET": server.Route(boom, public=True)})
         resp = self.request("GET", "/api/boom")
         self.assertEqual(resp.status, 500)
-        self.assertEqual(resp.json(), {"error": "Internal error"})
+        self.assertEqual(resp.json(), {"error": "Internal error", "code": "internal_error"})
         for text in ("Traceback", "secret", "server.py", "SELECT"):
             self.assertNotIn(text, resp.body.decode())
         self.assertIn("Traceback", self.log.getvalue())
@@ -505,7 +505,7 @@ class HeaderBudgetTests(ServerTestCase):
 
     def assertTooLarge(self, resp):
         self.assertEqual(resp.status, 431)
-        self.assertEqual(resp.json(), {"error": "Request headers too large"})
+        self.assertEqual(resp.json(), {"error": "Request headers too large", "code": "headers_too_large"})
         self.assertEqual(resp.headers["X-Frame-Options"], "DENY")
 
     def test_exactly_at_budget(self):

@@ -10,20 +10,35 @@ import secrets
 import threading
 import unicodedata
 
+import errors
 from config import normalise_ip
 
-USERNAME_RE = re.compile(r"[A-Za-z0-9._-]{3,32}")
-USERNAME_MSG = "Username must be 3-32 characters: letters, digits, . _ -"
-DISPLAY_NAME_LENGTH_MSG = "Display name must be 1-50 characters"
-DISPLAY_NAME_CHARS_MSG = "Display name contains characters that aren't allowed"
-PASSWORD_MSG = "Password must be 12-128 characters"
+USERNAME_MIN, USERNAME_MAX = 3, 32
+NAME_MIN, NAME_MAX = 1, 50
+PASSWORD_MIN, PASSWORD_MAX = 12, 128
+USERNAME_RE = re.compile("[A-Za-z0-9._-]{%d,%d}" % (USERNAME_MIN, USERNAME_MAX))
+USERNAME_PARAMS = {"min": USERNAME_MIN, "max": USERNAME_MAX}
+NAME_PARAMS = {"min": NAME_MIN, "max": NAME_MAX}
+PASSWORD_PARAMS = {"min": PASSWORD_MIN, "max": PASSWORD_MAX}
+# The English texts, for tests and callers that compare messages.
+USERNAME_MSG = errors.render("username_invalid", USERNAME_PARAMS)
+DISPLAY_NAME_LENGTH_MSG = errors.render("display_name_length", NAME_PARAMS)
+DISPLAY_NAME_CHARS_MSG = errors.render("display_name_chars")
+PASSWORD_MSG = errors.render("password_length", PASSWORD_PARAMS)
 
 BLOCKED_CATEGORIES = frozenset({"Cc", "Cs", "Co", "Cn", "Zl", "Zp", "Cf"})
 ZERO_WIDTH_JOINER = "\u200d"
 
 
 class Invalid(ValueError):
-    """A client-supplied field failed validation; the message is safe to return."""
+    """A client-supplied field failed validation: a 400 with an error code from errors.MESSAGES.
+
+    str() is the English text; `body` is the response body.
+    """
+
+    def __init__(self, code, params=None):
+        self.body = errors.body(code, params)
+        super().__init__(self.body["error"])
 
 
 class Busy(Exception):
@@ -31,7 +46,7 @@ class Busy(Exception):
 
 
 # --- Validation (section 4) ---
-# Validators for client fields raise Invalid(message) (a 400 with that message);
+# Validators for client fields raise Invalid(code, params) (a 400 with that error);
 # handlers call them in the contract's field order. The boolean helpers below are
 # for inputs that are never a 400 (login and confirmation passwords).
 
@@ -41,20 +56,20 @@ def valid_username(value):
 
 def require_username(value):
     if not valid_username(value):
-        raise Invalid(USERNAME_MSG)
+        raise Invalid("username_invalid", USERNAME_PARAMS)
     return value
 
 
-def clean_display_name(value, length_msg=DISPLAY_NAME_LENGTH_MSG, chars_msg=DISPLAY_NAME_CHARS_MSG):
-    """Display-name rules; passport names use the same rules with their own messages."""
+def clean_display_name(value, length_code="display_name_length", chars_code="display_name_chars"):
+    """Display-name rules; passport names use the same rules with their own codes."""
     if not isinstance(value, str):
-        raise Invalid(length_msg)
+        raise Invalid(length_code, NAME_PARAMS)
     name = unicodedata.normalize("NFC", value).strip()
-    if not 1 <= len(name) <= 50:
-        raise Invalid(length_msg)
+    if not NAME_MIN <= len(name) <= NAME_MAX:
+        raise Invalid(length_code, NAME_PARAMS)
     for ch in name:
         if ch != ZERO_WIDTH_JOINER and unicodedata.category(ch) in BLOCKED_CATEGORIES:
-            raise Invalid(chars_msg)
+            raise Invalid(chars_code)
     return name
 
 
@@ -63,18 +78,18 @@ def has_surrogate(text):
 
 
 def valid_new_password(value):
-    return isinstance(value, str) and 12 <= len(value) <= 128 and not has_surrogate(value)
+    return isinstance(value, str) and PASSWORD_MIN <= len(value) <= PASSWORD_MAX and not has_surrogate(value)
 
 
 def require_new_password(value):
     if not valid_new_password(value):
-        raise Invalid(PASSWORD_MSG)
+        raise Invalid("password_length", PASSWORD_PARAMS)
     return value
 
 
 def usable_password(value):
     """Login/confirmation passwords: anything else is treated as a wrong password."""
-    return isinstance(value, str) and 1 <= len(value) <= 128 and not has_surrogate(value)
+    return isinstance(value, str) and 1 <= len(value) <= PASSWORD_MAX and not has_surrogate(value)
 
 
 # --- Password hashing ---

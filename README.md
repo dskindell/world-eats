@@ -33,6 +33,7 @@ The screenshots use sample users (Alex and Sam).
 - [Country list](#country-list)
 - [World map](#world-map)
 - [Tests](#tests)
+- [Translations](#translations)
 - [Future ideas](#future-ideas)
 - [Layout](#layout)
 - [Security policy](#security-policy) and [License](#license)
@@ -152,6 +153,12 @@ docker run --rm -v "$PWD":/src:ro -w /src python:3.12-slim python -m unittest di
 
 The same suite runs on GitHub Actions for every push and pull request (`.github/workflows/tests.yml`). It needs only Python 3.12; there are no dependencies to install.
 
+## Translations
+
+The app is in English only, but all of its interface text lives in one table, `app/static/strings-en.js`, so it can be translated without touching the code. Each entry has a fixed key; values are plain text, with placeholders such as `{max}` that must be kept as they are, and plurals written as a set of forms (`one` and `other` in English; other languages can add `zero`, `two`, `few` or `many`). Server errors come with a stable `code` (listed in `app/errors.py`), and the table has the text for each.
+
+Adding a language would mean copying the file, translating the values and setting `meta.lang`. Choosing between languages isn't built yet; `app.js` picks the table in one place (`STRINGS`). Country search and sorting stay in English for now.
+
 ## Future ideas
 
 Ideas that might be explored one day. They're not commitments, and there's no timeline.
@@ -166,12 +173,14 @@ Ideas that might be explored one day. They're not commitments, and there's no ti
 - Photos on meals.
 - Map pins for where a meal was eaten.
 - A light theme.
+- Translations into other languages.
 
 ## Layout
 
 - `app/server.py` - HTTP server, routing and request handling.
 - `app/auth.py`, `app/config.py`, `app/db.py`, `app/countries.py`, `app/meals.py`, `app/passports.py`, `app/search.py` - validation, passwords and lockout; configuration; SQLite schema and migrations; the country list; meals; passports; search.
-- `app/static/` - frontend (vanilla HTML/JS/CSS, no build step) and the generated `map.json`.
+- `app/errors.py` - the server's error codes and their English messages.
+- `app/static/` - frontend (vanilla HTML/JS/CSS, no build step), the interface text in `strings-en.js`, and the generated `map.json`.
 - `app/Dockerfile` - the image (Python 3.12 slim, runs as a non-root user).
 - `tests/` - `unittest` suite (stdlib only).
 - `.github/workflows/tests.yml` - runs the test suite on GitHub Actions.
