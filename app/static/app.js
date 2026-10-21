@@ -2150,9 +2150,9 @@ let pickStart = 0;
 
 const FLAP_CHARS = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const PICK_TICK_MS = 60;
-// Tile i (row-major over the whole board) stops at
-// PICK_FIRST_MS + i * PICK_SPREAD_MS / (N - 1), N = rows x cols: the first at
-// 400 ms, the last at 2500 ms, whatever the country.
+// The N = rows x cols tiles settle at the evenly spread times
+// PICK_FIRST_MS + k * PICK_SPREAD_MS / (N - 1) (400 ms to 2500 ms, whatever the
+// country), handed out in random order (stopTimes).
 const PICK_FIRST_MS = 400;
 const PICK_SPREAD_MS = 2100;
 // The board's size comes from its width and the 197 names only, never the pick.
@@ -2307,8 +2307,6 @@ function buildTiles(code, name) {
   const { cols, rows } = measureBoard();
   let layout = layoutName(name, cols);
   if (layout.length > rows && Object.hasOwn(BOARD_SHORT_NAMES, code)) layout = layoutName(BOARD_SHORT_NAMES[code], cols);
-  const n = rows * cols;
-  const step = PICK_SPREAD_MS / (n - 1);
   const box = $('pick-tiles');
   pickTiles = [];
   for (let r = 0; r < rows; r += 1) {
@@ -2318,11 +2316,35 @@ function buildTiles(code, name) {
       const el = textEl('span', '', 'pick-tile');
       rowEl.append(el);
       const ch = (layout[r] && layout[r][c]) || ' ';
-      pickTiles.push({ el, ch, stopAt: PICK_FIRST_MS + pickTiles.length * step, done: false });
+      pickTiles.push({ el, ch, stopAt: 0, done: false });
     }
     box.append(rowEl);
   }
+  const times = stopTimes(pickTiles.map((t) => t.ch));
+  pickTiles.forEach((t, i) => { t.stopAt = times[i]; });
   return layout.length <= rows;
+}
+
+// Stop times for tiles in board order (chars[i] is the tile's final character,
+// ' ' for a blank). One real letter (a random \p{L} tile, else any non-blank)
+// gets the last time, 2500 ms; the other tiles get evenly spread slots from
+// 400 ms to one tick before that, shuffled (Fisher-Yates with the secure
+// generator), so blanks settle among the letters and the name visibly
+// finishes on its own last tick.
+function stopTimes(chars) {
+  const n = chars.length;
+  const indexes = (test) => chars.flatMap((ch, i) => (test(ch) ? [i] : []));
+  const letters = indexes((ch) => /\p{L}/u.test(ch));
+  const pool = letters.length ? letters : indexes((ch) => ch !== ' ');
+  const last = pool.length ? pool[randomIndex(pool.length)] : n - 1;
+  const step = (PICK_SPREAD_MS - PICK_TICK_MS) / (n - 2);
+  const slots = Array.from({ length: n - 1 }, (_, k) => PICK_FIRST_MS + k * step);
+  for (let i = slots.length - 1; i > 0; i -= 1) {
+    const j = randomIndex(i + 1);
+    [slots[i], slots[j]] = [slots[j], slots[i]];
+  }
+  let next = 0;
+  return chars.map((_, i) => (i === last ? PICK_FIRST_MS + PICK_SPREAD_MS : slots[next++]));
 }
 
 // A settled tile: its letter, or blank.
