@@ -146,6 +146,7 @@
                   <p class="map-card-status" id="map-card-status"></p>
                 </div>
                 <button type="button" class="btn btn-primary" id="map-card-open" data-i18n="map.card_open">Open</button>
+                <div class="next-stop-buttons map-card-next" id="map-card-next" hidden></div>
               </div>
             </div>
             <div class="map-zoom">
@@ -202,6 +203,14 @@
         <p class="country-status" id="country-status"></p>
         <p class="muted" id="country-avg"></p>
       </div>
+
+      <!-- Next stops: app.js builds the buttons (participants) and the lines. -->
+      <section class="card stack" id="country-next-card" aria-labelledby="country-next-title" hidden>
+        <h2 id="country-next-title" data-i18n="nextstops.title">Next stops</h2>
+        <div class="next-stop-buttons" id="country-next-buttons" hidden></div>
+        <p class="hint" id="country-next-hint" hidden></p>
+        <div class="next-stop-lines" id="country-next-lines"></div>
+      </section>
 
       <section class="card" id="country-people-card" aria-labelledby="country-people-title">
         <h2 id="country-people-title" data-i18n="people.participants">Participants</h2>
@@ -641,6 +650,15 @@
         <label class="check"><input type="radio" name="mine" value="done"> <span data-i18n="filters.mine_done">Done by me</span></label>
         <label class="check"><input type="radio" name="mine" value="not_done"> <span data-i18n="filters.mine_not_done">Not done by me</span></label>
       </fieldset>
+      <!-- app.js hides the options this role and passport don't have, and names
+           Mine / Anyone's in full on personal passports. -->
+      <fieldset class="group" id="filters-next">
+        <legend data-i18n="filters.next">Next stops</legend>
+        <label class="check"><input type="radio" name="next" value="" checked> <span data-i18n="filters.any">Any</span></label>
+        <label class="check"><input type="radio" name="next" value="mine"> <span id="filter-next-mine">Mine</span></label>
+        <label class="check"><input type="radio" name="next" value="ours"> <span data-i18n="filters.next_ours">Ours</span></label>
+        <label class="check"><input type="radio" name="next" value="anyone"> <span id="filter-next-anyone">Anyone's</span></label>
+      </fieldset>
       <fieldset class="group" id="filters-region-group">
         <legend data-i18n="browse.sort_region">Region</legend>
         <div id="filters-regions"></div>
@@ -681,6 +699,7 @@
         <button type="button" class="btn" id="pick-country" disabled data-i18n="pick.open_country">Open country</button>
         <button type="button" class="btn" id="pick-again" disabled data-i18n="pick.again">Pick again</button>
       </div>
+      <div class="next-stop-buttons pick-next" id="pick-next" hidden></div>
     </div>
   </dialog>
 

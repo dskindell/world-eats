@@ -143,6 +143,12 @@ class PassportTestCase(ServerTestCase):
         self.assertEqual(q("SELECT meals.id FROM meals JOIN passport_members m ON m.passport_id = meals.passport_id "
                            "AND m.user_id = meals.user_id WHERE m.role != 'participant'"), [], "meal of a viewer")
         self.assertEqual(q("PRAGMA foreign_key_check"), [], "foreign key violation")
+        # Change 11b: own entries only for participants, no shared list on personal passports.
+        self.assertEqual(q("SELECT next_stops.id FROM next_stops JOIN passport_members m "
+                           "ON m.passport_id = next_stops.passport_id AND m.user_id = next_stops.user_id "
+                           "WHERE m.role != 'participant'"), [], "next stop of a viewer")
+        self.assertEqual(q("SELECT s.id FROM shared_next_stops s JOIN passports p ON p.id = s.passport_id "
+                           "WHERE p.is_personal = 1"), [], "shared next stop on a personal passport")
         for user_id in self.deleted_ids:
             if q("SELECT 1 FROM users WHERE id = ?", (user_id,)):
                 continue  # the id was reused by a new account (IdReuseTests checks that one itself)
@@ -150,6 +156,8 @@ class PassportTestCase(ServerTestCase):
             self.assertEqual(q("SELECT id FROM passport_members WHERE user_id = ?", (user_id,)), [])
             self.assertEqual(q("SELECT id FROM sessions WHERE user_id = ?", (user_id,)), [])
             self.assertEqual(q("SELECT id FROM meals WHERE user_id = ?", (user_id,)), [])
+            self.assertEqual(q("SELECT id FROM next_stops WHERE user_id = ?", (user_id,)), [])
+            self.assertEqual(q("SELECT id FROM shared_next_stops WHERE added_by = ?", (user_id,)), [])
 
 
 # --- Migration and account creation ---

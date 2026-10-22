@@ -40,6 +40,7 @@ VERSION_2 = db.MIGRATIONS[:2]  # the 1b schema
 VERSION_3 = db.MIGRATIONS[:3]  # the feature 2 schema
 VERSION_4 = db.MIGRATIONS[:4]  # the feature 3 schema
 VERSION_5 = db.MIGRATIONS[:5]  # the feature 4 schema
+VERSION_6 = db.MIGRATIONS[:6]  # the change 11a schema
 
 
 class MigrationTests(DbTestCase):
@@ -52,12 +53,13 @@ class MigrationTests(DbTestCase):
 
     def test_fresh_database(self):
         db.init_schema(self.path)
-        self.assertEqual(LATEST, 6)
-        self.assertEqual(self.version(), 6)
+        self.assertEqual(LATEST, 7)
+        self.assertEqual(self.version(), 7)
         conn = db.connect(self.path)
         try:
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
-            self.assertEqual(tables, {"users", "sessions", "passports", "passport_members", "meals", "sqlite_sequence"})
+            self.assertEqual(tables, {"users", "sessions", "passports", "passport_members", "meals",
+                                      "next_stops", "shared_next_stops", "sqlite_sequence"})
             self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0], "wal")
         finally:
             conn.close()
@@ -637,7 +639,7 @@ class Version6MigrationTests(DbTestCase):
 
     def test_upgrade(self):
         before = self.kept_rows()
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_6)
         self.assertEqual(self.version(), 6)
         self.assert_valid_seeds()
         self.assertEqual(self.kept_rows(), before, "existing rows unchanged")
@@ -649,19 +651,19 @@ class Version6MigrationTests(DbTestCase):
         """The same users in another database get other seeds: nothing is derived from the rows."""
         other = os.path.join(self.dir, "other.db")
         self.populate(other)
-        db.init_schema(self.path)
-        db.init_schema(other)
+        db.init_schema(self.path, VERSION_6)
+        db.init_schema(other, VERSION_6)
         first, second = self.seeds(), self.seeds(other)
         self.assertEqual(set(first), set(second))
         for user_id in first:
             self.assertNotEqual(first[user_id], second[user_id])
 
     def test_running_twice_is_a_no_op(self):
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_6)
         seeds = self.seeds()
         with open(self.path, "rb") as f:
             before = f.read()
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_6)
         self.assertEqual(self.version(), 6)
         self.assertEqual(self.seeds(), seeds)
         with open(self.path, "rb") as f:
@@ -669,7 +671,7 @@ class Version6MigrationTests(DbTestCase):
 
     def test_steps_are_idempotent(self):
         """Re-run from version 5: only empty seeds are filled, existing ones are kept."""
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_6)
         seeds = self.seeds()
         conn = db.connect(self.path)
         try:
@@ -677,7 +679,7 @@ class Version6MigrationTests(DbTestCase):
             conn.execute("PRAGMA user_version = 5")
         finally:
             conn.close()
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_6)
         self.assertEqual(self.version(), 6)
         after = self.seeds()
         del seeds[3]
@@ -692,13 +694,13 @@ class Version6MigrationTests(DbTestCase):
                                "DELETE FROM sessions; DELETE FROM users;")
         finally:
             conn.close()
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_6)
         self.assertEqual(self.version(), 6)
         self.assertEqual(self.seeds(), {})
 
     def test_column_default_is_empty(self):
         """Only the code's INSERTs set a seed; the column itself defaults to ''."""
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_6)
         conn = db.connect(self.path)
         try:
             conn.execute("INSERT INTO users (username, display_name, password_hash, created_at) "
@@ -716,3 +718,127 @@ class Version6MigrationTests(DbTestCase):
         self.assertEqual(self.kept_rows(), before)
         names = {r[0] for r in self.query("SELECT name FROM pragma_table_info('users')")}
         self.assertNotIn("avatar_seed", names, "ALTER TABLE rolled back with the rest")
+
+
+class Version7MigrationTests(DbTestCase):
+    """Schema version 7 (contract 11b section 2) applied to a change 11a (version 6) database."""
+
+    USERS = Version6MigrationTests.USERS  # the same rows, populated by Version6MigrationTests.populate
+
+    def setUp(self):
+        super().setUp()
+        Version6MigrationTests.populate(self, self.path)
+        db.init_schema(self.path, VERSION_6)
+
+    def kept_rows(self):
+        return Version6MigrationTests.kept_rows(self) | {
+            "seeds": self.query("SELECT id, avatar_seed FROM users ORDER BY id")}
+
+    def objects(self):
+        return self.query("SELECT type, name, tbl_name FROM sqlite_master "
+                          "WHERE name LIKE '%next_stops%' ORDER BY name")
+
+    def test_upgrade(self):
+        self.assertEqual(self.version(), 6)
+        self.assertEqual(self.objects(), [])
+        before = self.kept_rows()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 7)
+        self.assertEqual(self.kept_rows(), before, "existing rows unchanged")
+        self.assertEqual(self.objects(), [
+            ("table", "next_stops", "next_stops"), ("index", "next_stops_user", "next_stops"),
+            ("table", "shared_next_stops", "shared_next_stops"),
+            ("index", "shared_next_stops_added_by", "shared_next_stops"),
+            ("index", "sqlite_autoindex_next_stops_1", "next_stops"),
+            ("index", "sqlite_autoindex_shared_next_stops_1", "shared_next_stops")])
+        self.assertEqual(self.query("SELECT COUNT(*) FROM next_stops"), [(0,)])
+        self.assertEqual(self.query("SELECT COUNT(*) FROM shared_next_stops"), [(0,)])
+        self.assertEqual(self.query("SELECT \"table\", \"from\", \"to\", on_delete FROM "
+                                    "pragma_foreign_key_list('next_stops') ORDER BY seq"),
+                         [("passport_members", "passport_id", "passport_id", "CASCADE"),
+                          ("passport_members", "user_id", "user_id", "CASCADE")])
+        self.assertEqual(self.query("SELECT \"table\", \"from\", \"to\", on_delete FROM "
+                                    "pragma_foreign_key_list('shared_next_stops') ORDER BY \"from\""),
+                         [("users", "added_by", "id", "SET NULL"), ("passports", "passport_id", "id", "CASCADE")])
+
+    def test_running_twice_is_a_no_op(self):
+        db.init_schema(self.path)
+        self.add_entries()
+        with open(self.path, "rb") as f:
+            before = f.read()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 7)
+        with open(self.path, "rb") as f:
+            self.assertEqual(f.read(), before)
+
+    def test_steps_are_idempotent(self):
+        """Re-run from version 6 with entries present: nothing changes, nothing fails."""
+        db.init_schema(self.path)
+        self.add_entries()
+        entries = self.entries()
+        conn = db.connect(self.path)
+        try:
+            conn.execute("PRAGMA user_version = 6")
+        finally:
+            conn.close()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 7)
+        self.assertEqual(self.entries(), entries)
+
+    def test_failure_leaves_version_6(self):
+        before = self.kept_rows()
+        bad = VERSION_6 + [(7, db.MIGRATIONS[6][1] + ["NOT VALID SQL"])]
+        with self.assertRaises(sqlite3.Error):
+            db.init_schema(self.path, bad)
+        self.assertEqual(self.version(), 6)
+        self.assertEqual(self.kept_rows(), before)
+        self.assertEqual(self.objects(), [], "CREATE TABLE rolled back with the rest")
+
+    def add_entries(self):
+        conn = db.connect(self.path)
+        try:
+            conn.execute("INSERT INTO next_stops (passport_id, user_id, country_code, created_at) "
+                         "VALUES (5, 1, 'FR', 10), (5, 2, 'FR', 11)")  # user 2 is a viewer: FK allows it
+            conn.execute("INSERT INTO shared_next_stops (passport_id, country_code, added_by, created_at) "
+                         "VALUES (5, 'JP', 1, 12), (5, 'IT', 2, 13)")
+        finally:
+            conn.close()
+
+    def entries(self):
+        return (self.query("SELECT id, passport_id, user_id, country_code, created_at FROM next_stops ORDER BY id"),
+                self.query("SELECT id, passport_id, country_code, added_by, created_at FROM shared_next_stops "
+                           "ORDER BY id"))
+
+    def test_constraints_and_cascades(self):
+        db.init_schema(self.path)
+        self.add_entries()
+        conn = db.connect(self.path)
+        try:
+            for sql in ("INSERT INTO next_stops (passport_id, user_id, country_code, created_at) "
+                        "VALUES (5, 1, 'FR', 1)",  # unique per list
+                        "INSERT INTO next_stops (passport_id, user_id, country_code, created_at) "
+                        "VALUES (5, 3, 'DE', 1)",  # not a member
+                        "INSERT INTO next_stops (passport_id, user_id, country_code, created_at) "
+                        "VALUES (5, 1, 'FRA', 1)",
+                        "INSERT INTO shared_next_stops (passport_id, country_code, added_by, created_at) "
+                        "VALUES (5, 'JP', 2, 1)",  # once per passport
+                        "INSERT INTO shared_next_stops (passport_id, country_code, added_by, created_at) "
+                        "VALUES (99, 'DE', 1, 1)",
+                        "INSERT INTO shared_next_stops (passport_id, country_code, added_by, created_at) "
+                        "VALUES (5, 'D', 1, 1)"):
+                with self.subTest(sql=sql):
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        conn.execute(sql)
+            # Membership delete takes the own entries; deleting the user nulls added_by.
+            conn.execute("DELETE FROM passport_members WHERE passport_id = 5 AND user_id = 2")
+            conn.execute("DELETE FROM passports WHERE owner_id = 2")
+            conn.execute("DELETE FROM users WHERE id = 2")
+        finally:
+            conn.close()
+        self.assertEqual(self.entries(), ([(1, 5, 1, "FR", 10)], [(1, 5, "JP", 1, 12), (2, 5, "IT", None, 13)]))
+        conn = db.connect(self.path)
+        try:
+            conn.execute("DELETE FROM passports WHERE id = 5")
+        finally:
+            conn.close()
+        self.assertEqual(self.entries(), ([], []))

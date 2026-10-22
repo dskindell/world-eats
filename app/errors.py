@@ -99,6 +99,12 @@ MESSAGES = {
     "search_empty": "Type something to search",
     "search_length": "Search can be up to {max} characters",
     "search_term_length": "Search words can be up to {max} characters",
+    # Next stops
+    "next_stop_list_invalid": "List must be mine or ours",
+    "next_stop_on_invalid": "on must be true or false",
+    "personal_no_shared": "Personal passports have no shared next stops",
+    "next_stop_done": "You've already eaten here",
+    "next_stop_complete": "Everyone has already eaten here",
 }
 
 
