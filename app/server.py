@@ -2,7 +2,8 @@
 
 Stdlib only (http.server + sqlite3). Feature 1a: first-visit setup, login,
 sessions and account settings; feature 1b: admin screen; feature 2: passports;
-feature 3: countries and meals; feature 4: search; feature 6: the world map data.
+feature 3: countries and meals; feature 4: search; feature 6: the world map data;
+change 11a: generated avatar seeds.
 
 Patterns for later features:
 - ROUTES is an ordered list of (compiled regex, {method: Route(handler, ...options)}),
@@ -150,7 +151,7 @@ class Route(NamedTuple):
 def user_json(row):
     return {"id": row["id"], "username": row["username"],
             "display_name": row["display_name"], "is_admin": bool(row["is_admin"]),
-            "must_change_password": bool(row["must_change_password"])}
+            "must_change_password": bool(row["must_change_password"]), "avatar_seed": row["avatar_seed"]}
 
 
 def temp_password_expired(row, now):
@@ -213,11 +214,12 @@ def api_setup(req):
         raise ApiError(409, "setup_complete")
     password_hash = req.app.hasher.hash(password)
     now = req.app.now()
+    avatar_seed = db.new_avatar_seed()
     with req.write():
         cur = conn.execute(
-            "INSERT INTO users (username, display_name, password_hash, is_admin, created_at, last_active_at) "
-            "SELECT ?, ?, ?, 1, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)",
-            (username, display_name, password_hash, now, now))
+            "INSERT INTO users (username, display_name, password_hash, is_admin, created_at, last_active_at, "
+            "avatar_seed) SELECT ?, ?, ?, 1, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM users)",
+            (username, display_name, password_hash, now, now, avatar_seed))
         if cur.rowcount != 1:
             raise ApiError(409, "setup_complete")
         user_id = cur.lastrowid
@@ -226,7 +228,7 @@ def api_setup(req):
     req.issue_session(token)
     req.app.log(f"Setup completed by {username}")
     return 201, {"user": user_json({"id": user_id, "username": username, "display_name": display_name,
-                                    "is_admin": 1, "must_change_password": 0})}
+                                    "is_admin": 1, "must_change_password": 0, "avatar_seed": avatar_seed})}
 
 
 def api_login(req):
@@ -246,7 +248,8 @@ def api_login(req):
         if user_key is not None:
             user = conn.execute(
                 "SELECT id, username, display_name, is_admin, must_change_password, disabled, "
-                "temp_password_set_at, password_hash FROM users WHERE username = ?", (username,)).fetchone()
+                "temp_password_set_at, password_hash, avatar_seed FROM users WHERE username = ?",
+                (username,)).fetchone()
         if user is not None and auth.usable_password(password):
             ok = req.app.hasher.verify(password, user["password_hash"])
             # A disabled account or an expired temporary password is a wrong password,
@@ -302,7 +305,21 @@ def api_update_account(req):
         if has_name:
             conn.execute("UPDATE users SET display_name = ? WHERE id = ?", (display_name, user_id))
         effective = passports.effective_default(conn, user_id)
-    return 200, {"user": {**user_json(req.user), "display_name": display_name}, "default_passport_id": effective}
+        # As stored now, not req.user's copy from before the transaction.
+        fresh = conn.execute("SELECT display_name, avatar_seed FROM users WHERE id = ?", (user_id,)).fetchone()
+    return 200, {"user": {**user_json(req.user), "display_name": fresh["display_name"],
+                          "avatar_seed": fresh["avatar_seed"]},
+                 "default_passport_id": effective}
+
+
+def api_new_avatar(req):
+    """Change 11a: a new random avatar seed for the caller. The body is ignored."""
+    avatar_seed = db.new_avatar_seed()
+    with req.write():
+        conn = req.db()
+        require_live_session(req, conn)
+        conn.execute("UPDATE users SET avatar_seed = ? WHERE id = ?", (avatar_seed, req.user["id"]))
+    return 200, {"user": {**user_json(req.user), "avatar_seed": avatar_seed}}
 
 
 def check_own_password(req, password, wrong_code):
@@ -386,7 +403,7 @@ def api_delete_account(req):
 
 # Named columns for the admin user object (never SELECT *); fixed strings, no input.
 ADMIN_USER_SELECT = ("SELECT id, username, display_name, is_admin, disabled, must_change_password, "
-                     "temp_password_set_at, created_at, last_active_at FROM users")
+                     "temp_password_set_at, created_at, last_active_at, avatar_seed FROM users")
 FIND_USER_SQL = ADMIN_USER_SELECT + " WHERE id = ?"
 LIST_USERS_SQL = ADMIN_USER_SELECT + " ORDER BY username COLLATE NOCASE"
 
@@ -408,7 +425,8 @@ def admin_user_json(req, row):
             "locked": req.app.lockout.is_locked(row["username"].lower()),
             "must_change_password": bool(row["must_change_password"]),
             "temp_password_expired": temp_password_expired(row, req.app.now()),
-            "created_at": row["created_at"], "last_active_at": row["last_active_at"]}
+            "created_at": row["created_at"], "last_active_at": row["last_active_at"],
+            "avatar_seed": row["avatar_seed"]}
 
 
 def log_admin_action(req, message):
@@ -438,9 +456,9 @@ def api_admin_create_user(req):
         try:
             cur = conn.execute(
                 "INSERT INTO users (username, display_name, password_hash, is_admin, created_at, disabled, "
-                "must_change_password, temp_password_set_at, last_active_at) "
-                "VALUES (?, ?, ?, ?, ?, 0, 1, ?, NULL)",
-                (username, display_name, password_hash, int(is_admin), now, now))
+                "must_change_password, temp_password_set_at, last_active_at, avatar_seed) "
+                "VALUES (?, ?, ?, ?, ?, 0, 1, ?, NULL, ?)",
+                (username, display_name, password_hash, int(is_admin), now, now, db.new_avatar_seed()))
         except sqlite3.IntegrityError:
             raise ApiError(409, "username_taken") from None
         passports.create_personal(conn, cur.lastrowid, now)
@@ -922,6 +940,7 @@ ROUTES = [(re.compile(pattern), methods) for pattern, methods in [
     (literal("/api/account/password"), {"POST": Route(api_change_password, allow_pending=True)}),
     (literal("/api/account/logout-everywhere"), {"POST": Route(api_logout_everywhere, allow_pending=True)}),
     (literal("/api/account/delete"), {"POST": Route(api_delete_account)}),
+    (literal("/api/account/avatar"), {"POST": Route(api_new_avatar)}),
     (literal("/api/account/delete-preview"), {"GET": Route(api_delete_preview)}),
     (literal("/api/users"), {"GET": Route(api_users)}),
     (literal("/api/passports"), {"GET": Route(api_passports), "POST": Route(api_create_passport)}),
@@ -1248,7 +1267,7 @@ class Handler(BaseHTTPRequestHandler):
             now = self.app.now()
             row = self.db().execute(
                 "SELECT sessions.id AS session_id, sessions.last_used_at, users.id, users.username, "
-                "users.display_name, users.is_admin, users.must_change_password "
+                "users.display_name, users.is_admin, users.must_change_password, users.avatar_seed "
                 "FROM sessions JOIN users ON users.id = sessions.user_id "
                 "WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND users.disabled = 0",
                 (token_hash(token), now)).fetchone()

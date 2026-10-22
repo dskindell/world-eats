@@ -39,6 +39,7 @@ VERSION_1 = db.MIGRATIONS[:1]  # the 1a schema, unchanged since release
 VERSION_2 = db.MIGRATIONS[:2]  # the 1b schema
 VERSION_3 = db.MIGRATIONS[:3]  # the feature 2 schema
 VERSION_4 = db.MIGRATIONS[:4]  # the feature 3 schema
+VERSION_5 = db.MIGRATIONS[:5]  # the feature 4 schema
 
 
 class MigrationTests(DbTestCase):
@@ -51,8 +52,8 @@ class MigrationTests(DbTestCase):
 
     def test_fresh_database(self):
         db.init_schema(self.path)
-        self.assertEqual(LATEST, 5)
-        self.assertEqual(self.version(), 5)
+        self.assertEqual(LATEST, 6)
+        self.assertEqual(self.version(), 6)
         conn = db.connect(self.path)
         try:
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
@@ -498,7 +499,7 @@ class Version5MigrationTests(DbTestCase):
     def test_upgrade(self):
         before = self.meals()
         db.init_schema(self.path)
-        self.assertEqual(self.version(), 5)
+        self.assertEqual(self.version(), LATEST)
         self.assertEqual(self.meals(), before, "other columns unchanged")
         texts = self.search_texts()
         self.assertEqual(texts[:3], ["creme brulee\nchez odile\nline one line two tres bon",
@@ -527,7 +528,7 @@ class Version5MigrationTests(DbTestCase):
         with open(self.path, "rb") as f:
             before = f.read()
         db.init_schema(self.path)
-        self.assertEqual(self.version(), 5)
+        self.assertEqual(self.version(), LATEST)
         with open(self.path, "rb") as f:
             self.assertEqual(f.read(), before)
 
@@ -541,7 +542,7 @@ class Version5MigrationTests(DbTestCase):
         finally:
             conn.close()
         db.init_schema(self.path)
-        self.assertEqual(self.version(), 5)
+        self.assertEqual(self.version(), LATEST)
         self.assertEqual(self.search_texts(), expected, "the backfill recomputes every row")
 
     def test_empty_meals_table(self):
@@ -551,7 +552,7 @@ class Version5MigrationTests(DbTestCase):
         finally:
             conn.close()
         db.init_schema(self.path)
-        self.assertEqual(self.version(), 5)
+        self.assertEqual(self.version(), LATEST)
 
     def test_failure_leaves_version_4(self):
         before = self.meals()
@@ -562,3 +563,156 @@ class Version5MigrationTests(DbTestCase):
         self.assertEqual(self.meals(), before)
         names = {r[0] for r in self.query("SELECT name FROM pragma_table_info('meals')")}
         self.assertNotIn("search_text", names, "ALTER TABLE rolled back with the rest")
+
+
+SEED_GLOB = "[0-9a-f]" * 32
+
+
+class Version6MigrationTests(DbTestCase):
+    """Schema version 6 (contract 11a section 2) applied to a feature 4 (version 5) database."""
+
+    SEED_RE = r"^[0-9a-f]{32}$"
+    USERS = [(1, "admin", "Admin", "h1", 1, 100), (2, "bob", "Bob", "h2", 0, 200),
+             (3, "Bob2", "Bob", "h3", 0, 300), (4, "dan", "Dan", "h4", 0, 400)]
+
+    def setUp(self):
+        super().setUp()
+        self.populate(self.path)
+
+    def populate(self, path):
+        db.init_schema(path, VERSION_5)
+        conn = db.connect(path)
+        try:
+            conn.executemany("INSERT INTO users (id, username, display_name, password_hash, is_admin, created_at) "
+                             "VALUES (?, ?, ?, ?, ?, ?)", self.USERS)
+            conn.execute("UPDATE users SET disabled = 1, must_change_password = 1, temp_password_set_at = 5, "
+                         "last_active_at = 6 WHERE id = 4")
+            conn.executescript("""
+                INSERT INTO passports (id, name, owner_id, is_personal, created_at)
+                    VALUES (1, 'My passport', 1, 1, 100), (2, 'My passport', 2, 1, 200),
+                           (3, 'My passport', 3, 1, 300), (4, 'My passport', 4, 1, 400), (5, 'Trip', 1, 0, 500);
+                INSERT INTO passport_members (passport_id, user_id, role, created_at)
+                    VALUES (1, 1, 'participant', 100), (2, 2, 'participant', 200), (3, 3, 'participant', 300),
+                           (4, 4, 'participant', 400), (5, 1, 'participant', 500), (5, 2, 'viewer', 500);
+                INSERT INTO meals (passport_id, user_id, country_code, eaten_on, dish, search_text,
+                                   created_at, updated_at)
+                    VALUES (5, 1, 'PE', '2026-10-01', 'Ceviche', 'ceviche', 7, 8);
+                INSERT INTO sessions (token_hash, user_id, created_at, last_used_at, expires_at)
+                    VALUES ('t1', 1, 1, 2, 3);
+                UPDATE users SET default_passport_id = 5 WHERE id = 1;
+            """)
+        finally:
+            conn.close()
+
+    def kept_rows(self):
+        """Every pre-existing column of every table."""
+        return {
+            "users": self.query("SELECT id, username, display_name, password_hash, is_admin, created_at, disabled, "
+                                "must_change_password, last_active_at, temp_password_set_at, default_passport_id "
+                                "FROM users ORDER BY id"),
+            "passports": self.query("SELECT id, name, owner_id, is_personal, created_at FROM passports ORDER BY id"),
+            "members": self.query("SELECT id, passport_id, user_id, role, created_at FROM passport_members "
+                                  "ORDER BY id"),
+            "meals": self.query("SELECT id, passport_id, user_id, country_code, eaten_on, dish, place, rating, notes, "
+                                "created_at, updated_at, search_text FROM meals ORDER BY id"),
+            "sessions": self.query("SELECT id, token_hash, user_id, created_at, last_used_at, expires_at "
+                                   "FROM sessions ORDER BY id"),
+        }
+
+    def seeds(self, path=None):
+        conn = db.connect(path or self.path)
+        try:
+            return {row[0]: row[1] for row in conn.execute("SELECT id, avatar_seed FROM users ORDER BY id")}
+        finally:
+            conn.close()
+
+    def assert_valid_seeds(self):
+        seeds = self.seeds()
+        self.assertEqual(len(seeds), len(self.USERS))
+        for seed in seeds.values():
+            self.assertRegex(seed, self.SEED_RE)
+        self.assertEqual(len(set(seeds.values())), len(seeds), "one seed per user")
+        self.assertEqual(self.query("SELECT COUNT(*) FROM users WHERE avatar_seed NOT GLOB ?", (SEED_GLOB,)),
+                         [(0,)])
+
+    def test_upgrade(self):
+        before = self.kept_rows()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 6)
+        self.assert_valid_seeds()
+        self.assertEqual(self.kept_rows(), before, "existing rows unchanged")
+        column = self.query("SELECT type, \"notnull\", dflt_value FROM pragma_table_info('users') "
+                            "WHERE name = 'avatar_seed'")
+        self.assertEqual(column, [("TEXT", 1, "''")])
+
+    def test_seeds_are_random(self):
+        """The same users in another database get other seeds: nothing is derived from the rows."""
+        other = os.path.join(self.dir, "other.db")
+        self.populate(other)
+        db.init_schema(self.path)
+        db.init_schema(other)
+        first, second = self.seeds(), self.seeds(other)
+        self.assertEqual(set(first), set(second))
+        for user_id in first:
+            self.assertNotEqual(first[user_id], second[user_id])
+
+    def test_running_twice_is_a_no_op(self):
+        db.init_schema(self.path)
+        seeds = self.seeds()
+        with open(self.path, "rb") as f:
+            before = f.read()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 6)
+        self.assertEqual(self.seeds(), seeds)
+        with open(self.path, "rb") as f:
+            self.assertEqual(f.read(), before)
+
+    def test_steps_are_idempotent(self):
+        """Re-run from version 5: only empty seeds are filled, existing ones are kept."""
+        db.init_schema(self.path)
+        seeds = self.seeds()
+        conn = db.connect(self.path)
+        try:
+            conn.execute("UPDATE users SET avatar_seed = '' WHERE id = 3")
+            conn.execute("PRAGMA user_version = 5")
+        finally:
+            conn.close()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 6)
+        after = self.seeds()
+        del seeds[3]
+        self.assertNotEqual(after.pop(3), "")
+        self.assertEqual(after, seeds)
+        self.assert_valid_seeds()
+
+    def test_empty_users_table(self):
+        conn = db.connect(self.path)
+        try:
+            conn.executescript("DELETE FROM meals; DELETE FROM passport_members; DELETE FROM passports; "
+                               "DELETE FROM sessions; DELETE FROM users;")
+        finally:
+            conn.close()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 6)
+        self.assertEqual(self.seeds(), {})
+
+    def test_column_default_is_empty(self):
+        """Only the code's INSERTs set a seed; the column itself defaults to ''."""
+        db.init_schema(self.path)
+        conn = db.connect(self.path)
+        try:
+            conn.execute("INSERT INTO users (username, display_name, password_hash, created_at) "
+                         "VALUES ('raw', 'Raw', 'x', 1)")
+        finally:
+            conn.close()
+        self.assertEqual(self.query("SELECT avatar_seed FROM users WHERE username = 'raw'"), [("",)])
+
+    def test_failure_leaves_version_5(self):
+        before = self.kept_rows()
+        bad = VERSION_5 + [(6, db.MIGRATIONS[5][1] + ["NOT VALID SQL"])]
+        with self.assertRaises(sqlite3.Error):
+            db.init_schema(self.path, bad)
+        self.assertEqual(self.version(), 5)
+        self.assertEqual(self.kept_rows(), before)
+        names = {r[0] for r in self.query("SELECT name FROM pragma_table_info('users')")}
+        self.assertNotIn("avatar_seed", names, "ALTER TABLE rolled back with the rest")

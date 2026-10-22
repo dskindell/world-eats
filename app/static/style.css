@@ -41,6 +41,12 @@
   --board-bg: #0a0c0f;
   --board-tile: #1d2128;
   --board-text: #f7e48c;
+  /* Generated avatars: a light disc (the pattern colour comes from the
+     seed), a thin rim so it sits cleanly on dark surfaces, and the grey
+     disc shown when a seed is missing or invalid. */
+  --avatar-bg: #eef0f3;
+  --avatar-rim: #5b6573;
+  --avatar-placeholder: #6b7480;
   --backdrop: rgb(0 0 0 / 0.6);
   --shadow: rgb(0 0 0 / 0.45);
 
@@ -1311,4 +1317,91 @@ h1:focus {
     width: 1rem;
     font-size: 1rem;
   }
+}
+
+/* ---- Avatars (decorative; always next to a name) ---- */
+
+.avatar {
+  display: inline-block;
+  flex: none;
+  vertical-align: middle;
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px var(--avatar-rim);
+}
+
+.avatar-sm {
+  width: 20px;
+  height: 20px;
+}
+
+.avatar-md {
+  width: 28px;
+  height: 28px;
+}
+
+.avatar-lg {
+  width: 72px;
+  height: 72px;
+}
+
+.avatar-disc {
+  fill: var(--avatar-bg);
+}
+
+.avatar-holder {
+  display: inline-flex;
+  flex: none;
+}
+
+.avatar-disc.avatar-empty {
+  fill: var(--avatar-placeholder);
+}
+
+/* Inline before a name in running text. */
+.list-card-title > .avatar,
+.list-card-sub > .avatar,
+.meal-author > .avatar,
+#passport-owner > .avatar {
+  margin-inline-end: 0.375rem;
+  /* Centre on the first line of text rather than the x-height. */
+  vertical-align: -0.3em;
+}
+
+/* The larger title text needs a smaller drop. */
+#admin-user-title > .avatar {
+  margin-inline-end: 0.375rem;
+  vertical-align: -0.2em;
+}
+
+/* In flex rows the row gap (0.75rem) is wider than wanted before a name. */
+.person-row > .avatar,
+.pick-row > .avatar {
+  margin-inline-end: -0.25rem;
+}
+
+.person-row > .person-text,
+.pick-row > label {
+  flex: 1 1 auto;
+}
+
+.avatar-intro {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.avatar-intro p {
+  margin: 0;
+}
+
+.avatar-select {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.field .avatar-select select {
+  flex: 1;
+  min-width: 0;
+  width: auto;
 }

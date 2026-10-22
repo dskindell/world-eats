@@ -10,7 +10,7 @@ MAX_OWNED = 50
 MAX_PEOPLE = 20
 
 # Fixed strings built from fixed strings; no input.
-PERSON_COLUMNS = "users.id, users.username, users.display_name, users.disabled"
+PERSON_COLUMNS = "users.id, users.username, users.display_name, users.disabled, users.avatar_seed"
 FIND_PERSON_SQL = "SELECT " + PERSON_COLUMNS + " FROM users WHERE id = ?"
 ACTIVE_USERS_SQL = ("SELECT " + PERSON_COLUMNS + " FROM users WHERE disabled = 0 AND id != ? "
                     "ORDER BY display_name COLLATE NOCASE, username")
@@ -37,7 +37,7 @@ ANY_SUCCESSOR_SQL = (
 
 def person_json(row):
     return {"id": row["id"], "username": row["username"], "display_name": row["display_name"],
-            "inactive": bool(row["disabled"])}
+            "inactive": bool(row["disabled"]), "avatar_seed": row["avatar_seed"]}
 
 
 def find_person(conn, user_id):
@@ -123,7 +123,7 @@ def summaries(conn, user_id):
     default_id = effective_default(conn, user_id)
     rows = conn.execute(
         "SELECT passports.id, passports.name, passports.owner_id, passports.is_personal, passport_members.role, "
-        "users.username, users.display_name, users.disabled FROM passport_members "
+        "users.username, users.display_name, users.disabled, users.avatar_seed FROM passport_members "
         "JOIN passports ON passports.id = passport_members.passport_id "
         "JOIN users ON users.id = passports.owner_id "
         "WHERE passport_members.user_id = ? "
@@ -133,7 +133,7 @@ def summaries(conn, user_id):
         {"id": row["id"], "name": row["name"], "is_personal": bool(row["is_personal"]),
          "role": caller_role(row, user_id), "is_default": row["id"] == default_id,
          "owner": {"id": row["owner_id"], "username": row["username"], "display_name": row["display_name"],
-                   "inactive": bool(row["disabled"])}}
+                   "inactive": bool(row["disabled"]), "avatar_seed": row["avatar_seed"]}}
         for row in rows]
 
 
