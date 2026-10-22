@@ -709,7 +709,7 @@ class MigrationServerTests(ServerTestCase):
 
     def test_old_meals_are_searchable(self):
         with self.db() as conn:
-            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 5)
+            self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], db.MIGRATIONS[-1][0])
         resp = self.request("POST", "/api/passports/1/search", {"q": "creme odile tres bon"}, token="live-token")
         self.assertEqual(resp.status, 200, resp)
         self.assertEqual(json.loads(resp.body), {"matches": [

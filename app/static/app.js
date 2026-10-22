@@ -175,6 +175,77 @@ function textEl(tag, text, className = '') {
   return el;
 }
 
+const SVG_NS = 'http://www.w3.org/2000/svg'; // security-lint: ok XML namespace name for createElementNS, never fetched
+
+// ---- Avatars (contract 11a §4): one builder, DOM only ----
+
+const AVATAR_SEED_RE = /^[0-9a-f]{32}$/;
+const AVATAR_SIZES = ['avatar-sm', 'avatar-md', 'avatar-lg'];
+const AVATAR_ALL_CELLS = 0x7fff;
+const AVATAR_MIN_CELLS = 4;
+
+// The 15 left-half cells (bit r * 3 + c) and the hue, or null for an invalid seed.
+function avatarPattern(seed) {
+  if (typeof seed !== 'string' || !AVATAR_SEED_RE.test(seed)) return null;
+  const b = [];
+  for (let i = 0; i < 32; i += 2) b.push(parseInt(seed.slice(i, i + 2), 16));
+  let v = (b[0] | (b[1] << 8)) & AVATAR_ALL_CELLS;
+  let on = 0;
+  for (let i = 0; i < 15; i += 1) on += (v >> i) & 1;
+  if (on < AVATAR_MIN_CELLS) v ^= AVATAR_ALL_CELLS;
+  const hue = ((b[4] << 8) | b[5]) % 360;
+  // Always true here; kept as the contract's guard on the one value built into fill (11a §6.6).
+  return Number.isInteger(hue) && hue >= 0 && hue < 360 ? { v, hue } : null;
+}
+
+// Decorative: the name next to it is the accessible name. The seed itself
+// never enters the DOM, only the derived cells and hue.
+function avatarEl(seed, sizeClass) {
+  const size = AVATAR_SIZES.includes(sizeClass) ? sizeClass : AVATAR_SIZES[0];
+  const svg = document.createElementNS(SVG_NS, 'svg');
+  svg.setAttribute('class', `avatar ${size}`);
+  svg.setAttribute('viewBox', '0 0 36 36');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const pattern = avatarPattern(seed);
+  const disc = document.createElementNS(SVG_NS, 'circle');
+  disc.setAttribute('class', pattern ? 'avatar-disc' : 'avatar-disc avatar-empty'); // i18n-ok CSS class names
+  disc.setAttribute('cx', '18');
+  disc.setAttribute('cy', '18');
+  disc.setAttribute('r', '18');
+  svg.append(disc);
+  if (!pattern) return svg;
+  const fill = `hsl(${pattern.hue}, 65%, 45%)`;
+  for (let row = 0; row < 5; row += 1) {
+    for (let col = 0; col < 5; col += 1) {
+      const src = col < 3 ? col : 4 - col;
+      if (!((pattern.v >> (row * 3 + src)) & 1)) continue;
+      const rect = document.createElementNS(SVG_NS, 'rect');
+      rect.setAttribute('x', String(5.5 + col * 5));
+      rect.setAttribute('y', String(5.5 + row * 5));
+      rect.setAttribute('width', '5');
+      rect.setAttribute('height', '5');
+      rect.setAttribute('fill', fill);
+      rect.setAttribute('shape-rendering', 'crispEdges');
+      svg.append(rect);
+    }
+  }
+  return svg;
+}
+
+// Pairs each fixed <span class="avatar-slot"> just rendered by innerHTML with
+// the same array, by index (one slot per item, contract 11a §6.1). If the
+// counts ever differ, every slot gets the placeholder rather than someone else's avatar.
+function fillAvatarSlots(container, people, sizeClass) {
+  const slots = container.querySelectorAll('.avatar-slot');
+  const aligned = slots.length === people.length;
+  if (!aligned) console.error('avatar slots and people differ in number'); // i18n-ok developer message
+  slots.forEach((slot, i) => {
+    const person = aligned ? people[i] : null;
+    slot.replaceWith(avatarEl(person ? person.avatar_seed : null, sizeClass));
+  });
+}
+
 // `code` is the server's error code ('' if none); branches compare codes, never text.
 class ApiError extends Error {
   constructor(message, status, code = '') {
@@ -458,6 +529,8 @@ function closeDialogs() {
 
 function updateUserText() {
   $('menu-name').textContent = state.user.display_name;
+  $('menu-avatar').replaceChildren(avatarEl(state.user.avatar_seed, 'avatar-md'));
+  $('account-avatar').replaceChildren(avatarEl(state.user.avatar_seed, 'avatar-lg'));
   $('account-username').textContent = state.user.username;
   $('menu-admin').hidden = !state.user.is_admin;
 }
@@ -658,6 +731,13 @@ bindForm($('name-form'), async (form) => {
   toast(t('toast.display_name_saved'));
 });
 
+bindForm($('avatar-form'), async () => {
+  const { user } = await api('POST', '/api/account/avatar', {});
+  state.user = user;
+  updateUserText();
+  toast(t('toast.avatar_saved'));
+});
+
 bindForm($('password-form'), async (form) => {
   const current = form.elements.current_password.value;
   const next = form.elements.new_password.value;
@@ -853,7 +933,7 @@ function passportCardHtml(p) {
   if (role) badges.push([role, '']);
   return `<li><button type="button" class="list-card" data-passport-id="${esc(String(p.id))}">` // i18n-ok HTML markup
     + `<span class="list-card-title">${esc(p.name)}</span>` // i18n-ok HTML markup
-    + `<span class="list-card-sub">${esc(ownerLine(p, true))}</span>` // i18n-ok HTML markup
+    + `<span class="list-card-sub"><span class="avatar-slot"></span>${esc(ownerLine(p, true))}</span>` // i18n-ok HTML markup
     + `<span class="badges">${badgesHtml(badges)}</span>` // i18n-ok HTML markup
     + '</button></li>';
 }
@@ -869,6 +949,7 @@ async function enterPassports(_param, token) {
   }
   if (token !== routeToken) return;
   $('passport-list').innerHTML = list.passports.map(passportCardHtml).join('');
+  fillAvatarSlots($('passport-list'), list.passports.map((p) => p.owner), 'avatar-sm');
   showView('passports');
 }
 
@@ -907,7 +988,7 @@ function pickRowHtml(u) {
   const notAdded = t('people.not_added');
   const participant = t('role.participant');
   const viewer = t('role.viewer');
-  return `<li class="pick-row"><label for="new-passport-person-${id}">` // i18n-ok HTML markup
+  return `<li class="pick-row"><span class="avatar-slot"></span><label for="new-passport-person-${id}">` // i18n-ok HTML markup
     + `<span class="person-name">${esc(u.display_name)}</span>` // i18n-ok HTML markup
     + `<span class="person-username">@${esc(u.username)}</span></label>` // i18n-ok HTML markup
     + `<select id="new-passport-person-${id}" data-user-id="${id}">` // i18n-ok HTML markup
@@ -923,6 +1004,7 @@ bindDialog('new-passport-open', 'new-passport-dialog', () => {
   $('new-passport-people').replaceChildren();
   loadPickUsers(form, status, (users) => {
     $('new-passport-people').innerHTML = users.map(pickRowHtml).join('');
+    fillAvatarSlots($('new-passport-people'), users, 'avatar-sm');
     status.textContent = t('people.nobody_to_add');
     status.hidden = users.length > 0;
   });
@@ -1643,7 +1725,6 @@ $('filters-form').addEventListener('submit', (event) => {
 // The map file is fetched once per page load and validated; the SVG holds only
 // svg/g/path/circle elements whose attributes are validated path data, checked
 // codes, app-computed numbers and fixed class names. All colour is in CSS.
-const SVG_NS = 'http://www.w3.org/2000/svg'; // security-lint: ok XML namespace name for createElementNS, never fetched
 const MAP_PATH_RE = /^[MLZ0-9.,\-]+$/;
 const MAP_MAX_PATH = 200000;
 const MAP_MAX_COUNTRIES = 197;
@@ -2751,7 +2832,7 @@ function countryPersonHtml(m) {
   const done = m.done === true;
   const name = memberName(m);
   const doneLabel = doneText(m);
-  return '<li class="person-row"><div class="person-text">' // i18n-ok HTML markup
+  return '<li class="person-row"><span class="avatar-slot"></span><div class="person-text">' // i18n-ok HTML markup
     + `<span class="person-name">${esc(name)}</span>` // i18n-ok HTML markup
     + `<span class="person-username">@${esc(m.username)}</span></div>` // i18n-ok HTML markup
     + `<span class="done-state${done ? ' done-mark' : ' muted'}">${esc(doneLabel)}</span>` // i18n-ok HTML markup
@@ -2777,7 +2858,11 @@ function mealCard(m) {
   head.append(textEl('span', date, 'meal-date'));
   if (isStars(m.rating)) head.append(starsEl(m.rating));
   li.append(head);
-  if (m.user) li.append(textEl('p', personLabel(m.user), 'muted'));
+  if (m.user) {
+    const author = textEl('p', personLabel(m.user), 'muted meal-author'); // i18n-ok CSS class names
+    author.prepend(avatarEl(m.user.avatar_seed, 'avatar-sm'));
+    li.append(author);
+  }
   if (typeof m.dish === 'string' && m.dish) li.append(textEl('p', m.dish, 'meal-dish'));
   if (typeof m.place === 'string' && m.place) li.append(textEl('p', t('meal.at_place', { place: m.place }), 'muted'));
   if (typeof m.notes === 'string' && m.notes) li.append(textEl('p', m.notes, 'meal-notes'));
@@ -2812,6 +2897,7 @@ function showCountry(code, data, countries) {
   $('country-avg').hidden = !hasAvg;
   $('country-people-card').hidden = personal;
   $('country-participants').innerHTML = personal ? '' : participants.map(countryPersonHtml).join('');
+  fillAvatarSlots($('country-participants'), participants, 'avatar-sm');
   $('log-meal-open').hidden = !canLogMeals();
   $('meal-list').replaceChildren(...meals.map(mealCard));
   $('meals-empty').hidden = meals.length > 0;
@@ -2982,7 +3068,7 @@ function personRowHtml(m, removable) {
   const name = memberName(m);
   const remove = t('people.remove_label', { name: m.display_name, username: m.username });
   const removeText = t('people.remove');
-  return '<li class="person-row"><div class="person-text">' // i18n-ok HTML markup
+  return '<li class="person-row"><span class="avatar-slot"></span><div class="person-text">' // i18n-ok HTML markup
     + `<span class="person-name">${esc(name)}</span>` // i18n-ok HTML markup
     + `<span class="person-username">@${esc(m.username)}</span>` // i18n-ok HTML markup
     + (badges.length ? `<span class="badges">${badgesHtml(badges)}</span>` : '') // i18n-ok HTML markup
@@ -2999,6 +3085,7 @@ function showPassport(detail) {
   const owner = p.role === 'owner';
   $('passport-name').textContent = p.name;
   $('passport-owner').textContent = ownerLine(p, false);
+  $('passport-owner').prepend(avatarEl(p.owner ? p.owner.avatar_seed : null, 'avatar-sm'));
   const id = String(p.id);
   for (const linkId of ['people-back', 'country-back']) {
     $(linkId).textContent = p.name;
@@ -3007,7 +3094,9 @@ function showPassport(detail) {
   $('passport-default').hidden = !p.is_default;
   $('make-default').hidden = p.is_default;
   $('participants-list').innerHTML = detail.participants.map((m) => personRowHtml(m, owner && !m.is_owner)).join('');
+  fillAvatarSlots($('participants-list'), detail.participants, 'avatar-sm');
   $('viewers-list').innerHTML = detail.viewers.map((m) => personRowHtml(m, owner)).join('');
+  fillAvatarSlots($('viewers-list'), detail.viewers, 'avatar-sm');
   $('viewers-list').hidden = detail.viewers.length === 0;
   $('viewers-empty').hidden = detail.viewers.length > 0;
   $('personal-note').hidden = !p.is_personal;
@@ -3098,11 +3187,20 @@ bindDialog('add-person-open', 'add-person-dialog', () => {
       return;
     }
     $('add-person-user').replaceChildren(...candidates.map((u) => new Option(personLabel(u), String(u.id))));
+    showAddPersonAvatar();
     $('add-person-fields').hidden = false;
     $('add-person-roles').hidden = false;
     $('add-person-submit').disabled = false;
   });
 });
+
+// A <select> option can't hold an SVG, so the chosen person's avatar sits beside it.
+function showAddPersonAvatar() {
+  const user = pickUsers.find((u) => String(u.id) === $('add-person-user').value);
+  $('add-person-avatar').replaceChildren(avatarEl(user ? user.avatar_seed : null, 'avatar-sm'));
+}
+
+$('add-person-user').addEventListener('change', showAddPersonAvatar);
 
 bindForm($('add-person-form'), async (form) => {
   const user = pickUsers.find((u) => String(u.id) === $('add-person-user').value);
@@ -3240,7 +3338,7 @@ function userBadges(u) {
 function userCardHtml(u) {
   const badges = badgesHtml(userBadges(u));
   return `<li><button type="button" class="list-card" data-user-id="${esc(String(u.id))}">` // i18n-ok HTML markup
-    + `<span class="list-card-title">${esc(u.display_name)}</span>` // i18n-ok HTML markup
+    + `<span class="list-card-title"><span class="avatar-slot"></span>${esc(u.display_name)}</span>` // i18n-ok HTML markup
     + `<span class="list-card-sub">@${esc(u.username)}</span>` // i18n-ok HTML markup
     + (badges ? `<span class="badges">${badges}</span>` : '') // i18n-ok HTML markup
     + '</button></li>';
@@ -3257,6 +3355,7 @@ async function enterAdmin(_param, token) {
   }
   if (token !== routeToken) return;
   $('admin-users').innerHTML = users.map(userCardHtml).join('');
+  fillAvatarSlots($('admin-users'), users, 'avatar-sm');
   showView('admin');
 }
 
@@ -3356,6 +3455,7 @@ function showAdminUser(u) {
   adminUser = u;
   const self = u.id === state.user.id;
   $('admin-user-title').textContent = u.display_name;
+  $('admin-user-title').prepend(avatarEl(u.avatar_seed, 'avatar-md'));
   $('au-username').textContent = u.username;
   $('au-role').textContent = u.is_admin ? t('admin.role_admin') : t('admin.role_user');
   $('au-status').textContent = u.disabled ? t('admin.status_disabled') : t('admin.status_active');

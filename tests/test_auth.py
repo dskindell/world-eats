@@ -47,7 +47,7 @@ class SetupTests(ServerTestCase):
         self.assertEqual(resp.status, 201)
         self.assertEqual(resp.json(), {"user": {"id": 1, "username": "David", "display_name": "David",
                                                 "is_admin": True,
-                                                "must_change_password": False}})
+                                                "must_change_password": False, "avatar_seed": self.seed_of(1)}})
         cookies = resp.set_cookies(self.cookie_name)
         self.assertEqual(len(cookies), 1)
         token = cookie_value(cookies[0])
@@ -182,7 +182,7 @@ class LoginTests(ServerTestCase):
         self.assertEqual(resp.status, 200)
         self.assertEqual(resp.json(), {"user": {"id": 1, "username": "admin", "display_name": "The Admin",
                                                 "is_admin": True,
-                                                "must_change_password": False}})
+                                                "must_change_password": False, "avatar_seed": self.seed_of(1)}})
         token = cookie_value(resp.set_cookies(self.cookie_name)[0])
         self.assertEqual(self.session_user(token)["id"], 1)
 

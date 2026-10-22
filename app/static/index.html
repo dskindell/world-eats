@@ -16,6 +16,7 @@
     <a class="brand" href="#/" data-i18n="app.title">World Eats</a>
     <div class="menu-wrap">
       <button type="button" class="menu-button" id="menu-button" aria-haspopup="menu" aria-expanded="false" aria-controls="user-menu">
+        <span class="avatar-holder" id="menu-avatar"></span>
         <span class="menu-name" id="menu-name"></span>
         <span class="caret" aria-hidden="true">&#9662;</span>
       </button>
@@ -233,6 +234,18 @@
           </div>
           <p class="form-error" role="alert" hidden></p>
           <button type="submit" class="btn btn-primary" data-i18n="common.save">Save</button>
+        </form>
+      </section>
+
+      <section class="card" aria-labelledby="avatar-title">
+        <h2 id="avatar-title" data-i18n="account.avatar_title">Avatar</h2>
+        <form class="stack" id="avatar-form" method="post" novalidate>
+          <div class="avatar-intro">
+            <span class="avatar-holder" id="account-avatar"></span>
+            <p class="muted" data-i18n="account.avatar_text">Your avatar is generated for you. Pick a new pattern if you don't like this one.</p>
+          </div>
+          <p class="form-error" role="alert" hidden></p>
+          <button type="submit" class="btn" data-i18n="account.avatar_new">New pattern</button>
         </form>
       </section>
 
@@ -495,7 +508,10 @@
       <p class="muted" id="add-person-status"></p>
       <div class="field" id="add-person-fields">
         <label for="add-person-user" data-i18n="people.person">Person</label>
-        <select id="add-person-user" name="user_id"></select>
+        <div class="avatar-select">
+          <span class="avatar-holder" id="add-person-avatar"></span>
+          <select id="add-person-user" name="user_id"></select>
+        </div>
       </div>
       <fieldset class="group" id="add-person-roles">
         <legend data-i18n="admin.role">Role</legend>

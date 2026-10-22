@@ -227,7 +227,8 @@ class BodyTests(ServerTestCase):
             "id": 99, "is_admin": False, "created_at": 0, "extra": [1, 2]})
         self.assertEqual(resp.status, 201)
         self.assertEqual(resp.json()["user"], {"id": 1, "username": "admin", "display_name": "Admin",
-                                               "is_admin": True, "must_change_password": False})
+                                               "is_admin": True, "must_change_password": False,
+                                               "avatar_seed": self.seed_of(1)})
 
     def test_get_with_body(self):
         for value in ("5", "abc", "00", "-0"):
@@ -635,5 +636,5 @@ class RouteOptionTests(ServerTestCase):
         token = self.setup_admin()
         self.assertEqual(self.request("GET", "/api/whoami", token=token).status, 200)
         self.assertNotIn("password_hash", seen["keys"])
-        self.assertEqual(seen["keys"], ["display_name", "id", "is_admin", "last_used_at", "must_change_password",
-                                        "session_id", "username"])
+        self.assertEqual(seen["keys"], ["avatar_seed", "display_name", "id", "is_admin", "last_used_at",
+                                        "must_change_password", "session_id", "username"])

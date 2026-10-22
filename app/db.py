@@ -19,6 +19,7 @@ SELECTs to agree (e.g. a membership check then the details) wraps them in
 """
 
 import re
+import secrets
 import sqlite3
 import threading
 import time
@@ -49,6 +50,18 @@ def backfill_search_text(conn):
     rows = conn.execute("SELECT id, dish, place, notes FROM meals").fetchall()
     conn.executemany("UPDATE meals SET search_text = ? WHERE id = ?",
                      [(search.meal_search_text(row[1], row[2], row[3]), row[0]) for row in rows])
+
+
+def backfill_avatar_seeds(conn):
+    """Migration 6: a random avatar seed for every user without one. Fills only empty seeds."""
+    rows = conn.execute("SELECT id FROM users WHERE avatar_seed = ''").fetchall()
+    conn.executemany("UPDATE users SET avatar_seed = ? WHERE id = ?",
+                     [(new_avatar_seed(), row[0]) for row in rows])
+
+
+def new_avatar_seed():
+    """Change 11a: 128 random bits as 32 lowercase hex characters. Never derived from input."""
+    return secrets.token_hex(16)
 
 
 MIGRATIONS = [
@@ -133,6 +146,11 @@ MIGRATIONS = [
     (5, [
         add_column("meals", "search_text", "TEXT NOT NULL DEFAULT ''"),
         backfill_search_text,
+    ]),
+    # Change 11a: generated avatars. The seed is random, never from the username (usernames are reused).
+    (6, [
+        add_column("users", "avatar_seed", "TEXT NOT NULL DEFAULT ''"),
+        backfill_avatar_seeds,
     ]),
 ]
 

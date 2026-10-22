@@ -207,9 +207,10 @@ class ServerTestCase(unittest.TestCase):
         password_hash = self.app.hasher.hash(password)
         with self.db() as conn:
             cur = conn.execute(
-                "INSERT INTO users (username, display_name, password_hash, is_admin, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (username, display_name or username, password_hash, int(is_admin), self.base_time))
+                "INSERT INTO users (username, display_name, password_hash, is_admin, created_at, avatar_seed) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (username, display_name or username, password_hash, int(is_admin), self.base_time,
+                 db.new_avatar_seed()))
             passports.create_personal(conn, cur.lastrowid, self.base_time)
         return cur.lastrowid
 
@@ -219,6 +220,11 @@ class ServerTestCase(unittest.TestCase):
             for user_id in user_ids:
                 conn.execute("DELETE FROM passports WHERE owner_id = ?", (user_id,))
                 conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+
+    def seed_of(self, user_id):
+        """The user's stored avatar seed."""
+        with self.db() as conn:
+            return conn.execute("SELECT avatar_seed FROM users WHERE id = ?", (user_id,)).fetchone()[0]
 
     def sessions_for(self, user_id):
         with self.db() as conn:
