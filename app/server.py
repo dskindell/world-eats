@@ -3,7 +3,7 @@
 Stdlib only (http.server + sqlite3). Feature 1a: first-visit setup, login,
 sessions and account settings; feature 1b: admin screen; feature 2: passports;
 feature 3: countries and meals; feature 4: search; feature 6: the world map data;
-change 11a: generated avatar seeds.
+change 11a: generated avatar seeds; change 11b: next stops lists.
 
 Patterns for later features:
 - ROUTES is an ordered list of (compiled regex, {method: Route(handler, ...options)}),
@@ -43,6 +43,10 @@ Patterns for later features:
   validators (raising auth.Invalid), storage helpers and derived values.
   Meal writes check the role and the meal's owner inside the transaction and
   make the UPDATE/DELETE conditional on passport and user too.
+- Next stops (contract 11b): any write that can make a country fully complete
+  (a meal logged, a participant removed, leaving, disabled or deleted) calls
+  meals.prune_shared() in the same transaction, so the shared list never holds
+  a fully complete country.
 - Search (contract 4 §4) is a read sent as POST: validate the query without the
   database, take a search slot (503 when busy), then `with req.read():`,
   member_passport(), and the queries under a time budget (503 when it runs out).
@@ -392,11 +396,24 @@ def api_delete_account(req):
                            (user_id,)).fetchone()
         if row is not None and is_last_usable_admin(conn, row):
             raise ApiError(409, "only_admin_delete")
-        passports.remove_user_data(conn, user_id)
-        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
-        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        delete_user(conn, user_id)
     req.clear_session_cookie()
     return 200, {"ok": True}
+
+
+def delete_user(conn, user_id):
+    """Inside the write transaction: the user and everything of theirs (admin delete and self delete).
+
+    Change 11b: the passports they took part in are collected first, since the user
+    row delete cascades the memberships; each one still existing is then pruned.
+    """
+    participated = passports.shared_participations(conn, user_id)
+    passports.remove_user_data(conn, user_id)
+    conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+    conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+    for passport_id in participated:
+        if passports.passport_exists(conn, passport_id):
+            meals.prune_shared(conn, passport_id)
 
 
 # --- Admin endpoints (contract 1b, section 6) ---
@@ -517,6 +534,9 @@ def api_admin_disable(req, user_id):
             raise ApiError(409, "last_admin_disable")
         conn.execute("UPDATE users SET disabled = 1 WHERE id = ?", (user_id,))
         passports.handover_on_disable(conn, user_id)
+        # Change 11b: they no longer count, so the others may have completed some countries.
+        for passport_id in passports.shared_participations(conn, user_id):
+            meals.prune_shared(conn, passport_id)
         conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
         row = find_user(conn, user_id)
     log_admin_action(req, f"User {log_safe(row['username'])} disabled")
@@ -582,9 +602,7 @@ def api_admin_delete(req, user_id):
             raise ApiError(400, "confirm_username")
         if is_last_usable_admin(conn, row):
             raise ApiError(409, "last_admin_delete")
-        passports.remove_user_data(conn, user_id)
-        conn.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
-        conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        delete_user(conn, user_id)
     req.app.lockout.clear_user(row["username"].lower())
     log_admin_action(req, f"User {log_safe(row['username'])} deleted")
     return 200, {"ok": True}
@@ -754,6 +772,7 @@ def api_remove_member(req, passport_id, user_id):
         if cur.rowcount != 1:
             raise ApiError(404, "not_member")
         passports.clear_default(conn, user_id, passport_id)
+        after_membership_deleted(conn, passport_id, user_id)
         detail = reloaded_detail(req, conn, passport_id)
     return 200, detail
 
@@ -775,7 +794,17 @@ def api_leave_passport(req, passport_id):
         if cur.rowcount != 1:
             raise ApiError(404, "passport_not_found")
         passports.clear_default(conn, user_id, passport_id)
+        after_membership_deleted(conn, passport_id, user_id)
     return 200, {"ok": True}
+
+
+def after_membership_deleted(conn, passport_id, user_id):
+    """Change 11b: own entries went with the membership (cascade); shared ones lose the name.
+
+    The rest may now have done everything, so fully complete countries leave the shared list.
+    """
+    meals.forget_adder(conn, passport_id, user_id)
+    meals.prune_shared(conn, passport_id)
 
 
 def api_delete_preview(req):
@@ -856,6 +885,9 @@ def api_create_meal(req, passport_id, code):
         if limit is not None:
             raise ApiError(409, *limit)
         meal_id = meals.insert(conn, passport_id, user_id, code, meal, now)
+        # Change 11b: done now, so off the caller's own list; off the shared list if fully complete.
+        meals.remove_own_stop(conn, passport_id, user_id, code)
+        meals.prune_shared(conn, passport_id, code)
         row = meals.meal_by_id(conn, meal_id)
     return 201, {"meal": meals.meal_json(row, user_id)}
 
@@ -889,6 +921,44 @@ def api_delete_meal(req, passport_id, meal_id):
             raise ApiError(404, "meal_not_found")
         still_done = meals.has_meal(conn, passport_id, user_id, meal["country_code"])
     return 200, {"ok": True, "still_done": still_done}
+
+
+NEXT_STOP_LISTS = ("mine", "ours")
+
+
+def api_next_stop(req, passport_id, code):
+    """Change 11b §4: set (not toggle) a country on the caller's own list or the shared list."""
+    which, on = req.body.get("list"), req.body.get("on")
+    if type(which) is not str or which not in NEXT_STOP_LISTS:
+        raise ApiError(400, "next_stop_list_invalid")
+    if type(on) is not bool:
+        raise ApiError(400, "next_stop_on_invalid")
+    passport_id = int(passport_id)
+    user_id = req.user["id"]
+    with req.write():
+        conn = req.db()
+        require_live_session(req, conn)
+        passport = member_passport(req, conn, passport_id)
+        require_country(code)
+        require_participant(passport)
+        if which == "ours" and passport["is_personal"]:
+            raise ApiError(409, "personal_no_shared")
+        if which == "mine":
+            if not on:
+                meals.remove_own_stop(conn, passport_id, user_id, code)
+            elif meals.has_meal(conn, passport_id, user_id, code):
+                raise ApiError(409, "next_stop_done")
+            else:
+                meals.add_own_stop(conn, passport_id, user_id, code, req.app.now())
+        elif not on:
+            meals.remove_shared_stop(conn, passport_id, code)
+        elif meals.is_complete(conn, passport, code):
+            raise ApiError(409, "next_stop_complete")
+        else:
+            meals.add_shared_stop(conn, passport_id, user_id, code, req.app.now())
+        summary = meals.country_summary(meals.SummaryContext(conn, passport, user_id, code), code)
+        stops = meals.next_stops_json(conn, passport, code)
+    return 200, {"next_stops": stops, "my_next_stop": summary["my_next_stop"], "summary": summary}
 
 
 def api_search(req, passport_id):
@@ -953,6 +1023,7 @@ ROUTES = [(re.compile(pattern), methods) for pattern, methods in [
     (PASSPORT + literal("/countries"), {"GET": Route(api_passport_countries)}),
     (PASSPORT_COUNTRY, {"GET": Route(api_passport_country)}),
     (PASSPORT_COUNTRY + literal("/meals"), {"POST": Route(api_create_meal)}),
+    (PASSPORT_COUNTRY + literal("/next-stops"), {"POST": Route(api_next_stop)}),
     (PASSPORT_MEAL, {"PATCH": Route(api_update_meal)}),
     (PASSPORT_MEAL + literal("/delete"), {"POST": Route(api_delete_meal)}),
     (PASSPORT + literal("/search"), {"POST": Route(api_search)}),

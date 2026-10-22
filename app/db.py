@@ -152,6 +152,29 @@ MIGRATIONS = [
         add_column("users", "avatar_seed", "TEXT NOT NULL DEFAULT ''"),
         backfill_avatar_seeds,
     ]),
+    # Change 11b: next stops. Own entries go with the membership; shared entries keep
+    # the country when the adder is deleted (added_by SET NULL).
+    (7, [
+        """CREATE TABLE IF NOT EXISTS next_stops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            passport_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            country_code TEXT NOT NULL CHECK (length(country_code) = 2),
+            created_at INTEGER NOT NULL,
+            UNIQUE (passport_id, user_id, country_code),
+            FOREIGN KEY (passport_id, user_id) REFERENCES passport_members(passport_id, user_id) ON DELETE CASCADE
+        )""",
+        "CREATE INDEX IF NOT EXISTS next_stops_user ON next_stops(user_id)",
+        """CREATE TABLE IF NOT EXISTS shared_next_stops (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            passport_id INTEGER NOT NULL REFERENCES passports(id) ON DELETE CASCADE,
+            country_code TEXT NOT NULL CHECK (length(country_code) = 2),
+            added_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+            created_at INTEGER NOT NULL,
+            UNIQUE (passport_id, country_code)
+        )""",
+        "CREATE INDEX IF NOT EXISTS shared_next_stops_added_by ON shared_next_stops(added_by)",
+    ]),
 ]
 
 

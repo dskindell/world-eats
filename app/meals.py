@@ -1,4 +1,4 @@
-"""Meals and per-country progress.
+"""Meals, per-country progress and next stops (change 11b).
 
 Validators raise auth.Invalid (a 400) and never touch the database. Storage
 helpers take the request's connection and run inside the caller's transaction;
@@ -103,9 +103,29 @@ PARTICIPANTS_SQL = ("SELECT " + passports.PERSON_COLUMNS + " FROM passport_membe
                     "WHERE passport_members.passport_id = ? AND passport_members.role = 'participant' "
                     "ORDER BY passport_members.id")
 # Per country and person: their completion date, meal count, and rating sum and count.
-PROGRESS_SQL = ("SELECT country_code, user_id, MIN(eaten_on) AS first_on, COUNT(*) AS meals, "
-                "SUM(rating) AS rating_sum, COUNT(rating) AS ratings FROM meals WHERE passport_id = ? "
-                "GROUP BY country_code, user_id")
+PROGRESS_SELECT = ("SELECT country_code, user_id, MIN(eaten_on) AS first_on, COUNT(*) AS meals, "
+                   "SUM(rating) AS rating_sum, COUNT(rating) AS ratings FROM meals WHERE passport_id = ?")
+PROGRESS_GROUP = " GROUP BY country_code, user_id"
+PROGRESS_SQL = PROGRESS_SELECT + PROGRESS_GROUP
+PROGRESS_ONE_SQL = PROGRESS_SELECT + " AND country_code = ?" + PROGRESS_GROUP
+# Change 11b §7.1: own entries count only for enabled participants, in membership order.
+OWN_STOPS_SELECT = ("SELECT next_stops.country_code, " + passports.PERSON_COLUMNS + " FROM next_stops "
+                    "JOIN passport_members ON passport_members.passport_id = next_stops.passport_id "
+                    "AND passport_members.user_id = next_stops.user_id "
+                    "JOIN users ON users.id = next_stops.user_id "
+                    "WHERE next_stops.passport_id = ? AND passport_members.role = 'participant' "
+                    "AND users.disabled = 0")
+OWN_STOPS_SQL = OWN_STOPS_SELECT + " ORDER BY passport_members.id"
+OWN_STOPS_ONE_SQL = OWN_STOPS_SELECT + " AND next_stops.country_code = ? ORDER BY passport_members.id"
+SHARED_STOPS_SQL = "SELECT country_code FROM shared_next_stops WHERE passport_id = ?"
+SHARED_STOPS_ONE_SQL = SHARED_STOPS_SQL + " AND country_code = ?"
+# The adder only while they're still a participant here (§7.1); otherwise the person columns are NULL.
+SHARED_STOP_DETAIL_SQL = (
+    "SELECT shared_next_stops.created_at AS added_at, " + passports.PERSON_COLUMNS + " FROM shared_next_stops "
+    "LEFT JOIN passport_members ON passport_members.passport_id = shared_next_stops.passport_id "
+    "AND passport_members.user_id = shared_next_stops.added_by AND passport_members.role = 'participant' "
+    "LEFT JOIN users ON users.id = passport_members.user_id "
+    "WHERE shared_next_stops.passport_id = ? AND shared_next_stops.country_code = ?")
 
 
 def meal_json(row, caller_id):
@@ -195,32 +215,84 @@ def country_state(first_on, active_ids):
     return "some", None
 
 
-def country_list(conn, passport, caller_id):
-    """The passport's progress and all 197 summaries, in a fixed number of queries."""
-    is_viewer = passport["role"] == "viewer"
-    active_ids = {row["id"] for row in conn.execute(PARTICIPANTS_SQL, (passport["id"],)) if not row["disabled"]}
+def active_participant_ids(conn, passport_id):
+    return {row["id"] for row in conn.execute(PARTICIPANTS_SQL, (passport_id,)) if not row["disabled"]}
+
+
+def progress(conn, passport_id, code=None):
+    """{country code: {first_on: {user_id: date}, meals, sum, count}}, for one country if code is given."""
+    rows = (conn.execute(PROGRESS_SQL, (passport_id,)) if code is None
+            else conn.execute(PROGRESS_ONE_SQL, (passport_id, code)))
     per_country = {}
-    for row in conn.execute(PROGRESS_SQL, (passport["id"],)):
+    for row in rows:
         entry = per_country.setdefault(row["country_code"], {"first_on": {}, "meals": 0, "sum": 0, "count": 0})
         entry["first_on"][row["user_id"]] = row["first_on"]
         entry["meals"] += row["meals"]
         entry["sum"] += row["rating_sum"] or 0
         entry["count"] += row["ratings"]
-    summaries, complete, mine = [], 0, 0
-    empty = {"first_on": {}, "meals": 0, "sum": 0, "count": 0}
-    for country in countries.COUNTRIES:
-        entry = per_country.get(country.code, empty)
-        status, completed_on = country_state(entry["first_on"], active_ids)
-        done = caller_id in entry["first_on"]
-        complete += status == "complete"
-        mine += done
-        summaries.append({"code": country.code, "status": status, "done_by_me": None if is_viewer else done,
-                          "meal_count": entry["meals"], "avg_rating": average(entry["sum"], entry["count"]),
-                          "completed_on": completed_on,
-                          "done_count": sum(user_id in entry["first_on"] for user_id in active_ids)})
-    return {"progress": {"total": len(countries.COUNTRIES), "complete": complete,
-                         "mine": None if is_viewer else mine, "active_participants": len(active_ids)},
+    return per_country
+
+
+EMPTY_PROGRESS = {"first_on": {}, "meals": 0, "sum": 0, "count": 0}
+
+
+class SummaryContext:
+    """Everything country_summary() needs, read in a fixed number of queries (all countries or one)."""
+
+    def __init__(self, conn, passport, caller_id, code=None):
+        passport_id = passport["id"]
+        self.caller_id = caller_id
+        self.is_viewer = passport["role"] == "viewer"
+        self.active_ids = active_participant_ids(conn, passport_id)
+        self.per_country = progress(conn, passport_id, code)
+        self.own = {}  # country code -> [user ids, membership order]
+        rows = (conn.execute(OWN_STOPS_SQL, (passport_id,)) if code is None
+                else conn.execute(OWN_STOPS_ONE_SQL, (passport_id, code)))
+        for row in rows:
+            self.own.setdefault(row["country_code"], []).append(row["id"])
+        self.shared = set()
+        if not passport["is_personal"]:  # §7.1: never a shared list on a personal passport
+            rows = (conn.execute(SHARED_STOPS_SQL, (passport_id,)) if code is None
+                    else conn.execute(SHARED_STOPS_ONE_SQL, (passport_id, code)))
+            self.shared = {row["country_code"] for row in rows}
+
+
+def country_summary(ctx, code):
+    """One country's summary object, as in GET .../countries (contract 11b §7.4: the only builder)."""
+    entry = ctx.per_country.get(code, EMPTY_PROGRESS)
+    status, completed_on = country_state(entry["first_on"], ctx.active_ids)
+    own = ctx.own.get(code, [])
+    return {"code": code, "status": status,
+            "done_by_me": None if ctx.is_viewer else ctx.caller_id in entry["first_on"],
+            "meal_count": entry["meals"], "avg_rating": average(entry["sum"], entry["count"]),
+            "completed_on": completed_on,
+            "done_count": sum(user_id in entry["first_on"] for user_id in ctx.active_ids),
+            "my_next_stop": None if ctx.is_viewer else ctx.caller_id in own,
+            "next_stop_user_ids": list(own),
+            "shared_next_stop": code in ctx.shared}
+
+
+def country_list(conn, passport, caller_id):
+    """The passport's progress and all 197 summaries, in a fixed number of queries."""
+    ctx = SummaryContext(conn, passport, caller_id)
+    summaries = [country_summary(ctx, country.code) for country in countries.COUNTRIES]
+    return {"progress": {"total": len(countries.COUNTRIES),
+                         "complete": sum(s["status"] == "complete" for s in summaries),
+                         "mine": None if ctx.is_viewer else sum(s["done_by_me"] for s in summaries),
+                         "active_participants": len(ctx.active_ids)},
             "countries": summaries}
+
+
+def next_stops_json(conn, passport, code):
+    """The detail's next_stops object: people with it on their own list, and the shared entry."""
+    people = [passports.person_json(row) for row in conn.execute(OWN_STOPS_ONE_SQL, (passport["id"], code))]
+    shared = None
+    if not passport["is_personal"]:
+        row = conn.execute(SHARED_STOP_DETAIL_SQL, (passport["id"], code)).fetchone()
+        if row is not None:
+            shared = {"added_by": passports.person_json(row) if row["id"] is not None else None,
+                      "created_at": row["added_at"]}
+    return {"people": people, "shared": shared}
 
 
 def country_detail(conn, passport, country, caller_id):
@@ -232,9 +304,66 @@ def country_detail(conn, passport, country, caller_id):
     active_ids = {row["id"] for row in participants if not row["disabled"]}
     status, completed_on = country_state(first_on, active_ids)
     ratings = [row["rating"] for row in meal_rows if row["rating"] is not None]
+    stops = next_stops_json(conn, passport, country.code)
     return {"country": {"code": country.code, "name": country.name, "region": country.region},
             "status": status, "completed_on": completed_on, "avg_rating": average(sum(ratings), len(ratings)),
             "participants": [{**passports.person_json(row), "is_owner": row["id"] == passport["owner_id"],
                               "done": row["id"] in first_on, "completed_on": first_on.get(row["id"])}
                              for row in participants],
-            "meals": [meal_json(row, caller_id) for row in meal_rows]}
+            "meals": [meal_json(row, caller_id) for row in meal_rows],
+            "my_next_stop": my_next_stop(passport, stops, caller_id),
+            "next_stops": stops}
+
+
+def my_next_stop(passport, stops, caller_id):
+    if passport["role"] == "viewer":
+        return None
+    return any(person["id"] == caller_id for person in stops["people"])
+
+
+# --- Next stops (contract 11b). Writers run inside the caller's write transaction. ---
+
+def complete_codes(conn, passport_id, code=None):
+    """Fully complete countries (all, or just `code`) by country_state, as the summary's status.
+
+    §7.2: with no active participants nothing is complete.
+    """
+    active_ids = active_participant_ids(conn, passport_id)
+    return [country_code for country_code, entry in progress(conn, passport_id, code).items()
+            if country_state(entry["first_on"], active_ids)[0] == "complete"]
+
+
+def is_complete(conn, passport, code):
+    return code in complete_codes(conn, passport["id"], code)
+
+
+def add_own_stop(conn, passport_id, user_id, code, now):
+    conn.execute("INSERT OR IGNORE INTO next_stops (passport_id, user_id, country_code, created_at) "
+                 "VALUES (?, ?, ?, ?)", (passport_id, user_id, code, now))
+
+
+def remove_own_stop(conn, passport_id, user_id, code):
+    conn.execute("DELETE FROM next_stops WHERE passport_id = ? AND user_id = ? AND country_code = ?",
+                 (passport_id, user_id, code))
+
+
+def add_shared_stop(conn, passport_id, user_id, code, now):
+    """An existing entry keeps its original added_by and created_at."""
+    conn.execute("INSERT OR IGNORE INTO shared_next_stops (passport_id, country_code, added_by, created_at) "
+                 "VALUES (?, ?, ?, ?)", (passport_id, code, user_id, now))
+
+
+def remove_shared_stop(conn, passport_id, code):
+    conn.execute("DELETE FROM shared_next_stops WHERE passport_id = ? AND country_code = ?", (passport_id, code))
+
+
+def forget_adder(conn, passport_id, user_id):
+    """After a membership is deleted: shared entries they added stay, without their name."""
+    conn.execute("UPDATE shared_next_stops SET added_by = NULL WHERE passport_id = ? AND added_by = ?",
+                 (passport_id, user_id))
+
+
+def prune_shared(conn, passport_id, code=None):
+    """Removes fully complete countries (all of them, or just `code`) from the shared list."""
+    conn.executemany("DELETE FROM shared_next_stops WHERE passport_id = ? AND country_code = ?",
+                     [(passport_id, country_code) for country_code in complete_codes(conn, passport_id, code)])

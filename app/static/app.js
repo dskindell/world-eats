@@ -868,6 +868,11 @@ let pickUsers = [];
 let countryDetail = null;
 let mealEdit = null;
 let mealDelete = null;
+// Next-stop toggles in flight, as `<passport id>:<code>`; their buttons stay disabled.
+const nextStopBusy = new Set();
+// Bumped by every applied toggle response and every re-read after a 409, so
+// an older re-read can't overwrite newer state.
+let nextStopGen = 0;
 
 const ROLE_LABELS = Object.freeze({
   owner: () => t('role.owner'),
@@ -899,17 +904,19 @@ function clearPassportUi() {
   countryDetail = null;
   mealEdit = null;
   mealDelete = null;
+  nextStopBusy.clear();
   dropCountries();
   clearBrowse();
   resetMapUi();
   dialogToken += 1;
   for (const id of ['passport-list', 'participants-list', 'viewers-list', 'new-passport-people',
-    'add-person-user', 'default-passport', 'delete-preview', 'country-list', 'country-participants', 'meal-list']) {
+    'add-person-user', 'default-passport', 'delete-preview', 'country-list', 'country-participants', 'meal-list',
+    'country-next-buttons', 'country-next-lines', 'map-card-next', 'pick-next']) {
     $(id).replaceChildren();
   }
   for (const id of ['passport-name', 'passport-owner', 'delete-passport-text', 'passport-confirm-text',
     'passport-progress', 'people-back', 'country-back', 'country-flag', 'country-name', 'country-region',
-    'country-status', 'country-avg', 'meal-title', 'delete-meal-text', 'delete-meal-last']) {
+    'country-status', 'country-avg', 'meal-title', 'delete-meal-text', 'delete-meal-last', 'country-next-hint']) {
     $(id).textContent = '';
   }
   $('meal-form').reset();
@@ -1263,19 +1270,25 @@ function countryRowHtml(s, country, opts, hint) {
   return `<li><button type="button" class="country-row" data-code="${esc(country.code)}">` // i18n-ok HTML markup
     + `<span class="flag" aria-hidden="true">${esc(flagFor(country.code))}</span>` // i18n-ok HTML markup
     + `<span class="country-row-name">${esc(countryName(country.code, country.name))}</span>` // i18n-ok HTML markup
-    + `<span class="badges">${badgesHtml(badges)}</span>` // i18n-ok HTML markup
+    // One fixed, attribute-free slot per row, filled by fillNextStopSlots (contract 11b §7.8).
+    + `<span class="badges">${badgesHtml(badges)}<span class="next-stop-slot"></span></span>` // i18n-ok HTML markup
     + (hint ? `<span class="country-row-hint">${esc(hint)}</span>` : '') // i18n-ok HTML markup
     + '</button></li>';
 }
 
-function showCountryList(data, countries) {
+// The progress line and the rows from GET .../countries (also after a next-stops conflict).
+function setCountryRows(data, countries) {
   const personal = passport.passport.is_personal === true;
   const progress = data.progress && typeof data.progress === 'object' ? data.progress : {};
   const rows = (Array.isArray(data.countries) ? data.countries : [])
     .filter((s) => s && typeof s.code === 'string' && CODE_RE.test(s.code) && countries.has(s.code));
   $('passport-progress').textContent = progressText(progress, rows, personal);
-  const active = progress.active_participants;
-  browseRows = rows.map((s) => rowModel(s, countries.get(s.code), personal, active));
+  browseActive = progress.active_participants;
+  browseRows = rows.map((s) => rowModel(s, countries.get(s.code), personal, browseActive));
+}
+
+function showCountryList(data, countries) {
+  setCountryRows(data, countries);
   showBrowseControls();
   applyBrowse();
 }
@@ -1312,12 +1325,19 @@ const PARTICIPANT_STATUS_KEYS = ['not_started', 'your_turn', 'waiting', 'complet
 const VIEWER_STATUS_KEYS = ['not_started', 'some', 'complete'];
 const PERSONAL_STATUS_KEYS = ['not_started', 'complete'];
 const MINE_KEYS = ['done', 'not_done'];
+// Next stops filter values (`next=`) per passport kind and role (contract 11b §7.6).
+const NEXT_SHARED_PARTICIPANT = Object.freeze(['mine', 'ours', 'anyone']);
+const NEXT_SHARED_VIEWER = Object.freeze(['ours', 'anyone']);
+const NEXT_PERSONAL_OWNER = Object.freeze(['mine']);
+const NEXT_PERSONAL_VIEWER = Object.freeze(['anyone']);
 const MAX_QUERY = 200;
 
 // The open passport list's validated state ({id, opts, q, sort, status, mine,
-// region, stars, view}), its rows, and the search results. Dropped by clearBrowse().
+// nextStops, region, stars, view}), its rows, the active participant count
+// they were built with, and the search results. Dropped by clearBrowse().
 let browse = null;
 let browseRows = [];
+let browseActive = 0;
 let search = { on: false, pending: false, matches: null };
 // Bumped by every new search (and on clearing), so older responses are dropped.
 let searchToken = 0;
@@ -1327,11 +1347,15 @@ let searchTimer = 0;
 // statuses, and only participants of shared passports have "mine".
 function browseOptions(p) {
   const personal = p.is_personal === true;
-  const mine = !personal && (p.role === 'owner' || p.role === 'participant');
+  const participant = p.role === 'owner' || p.role === 'participant';
+  const mine = !personal && participant;
+  let nextStops = participant ? NEXT_SHARED_PARTICIPANT : NEXT_SHARED_VIEWER;
+  if (personal) nextStops = p.role === 'owner' ? NEXT_PERSONAL_OWNER : NEXT_PERSONAL_VIEWER;
   return {
     personal,
     statuses: personal ? PERSONAL_STATUS_KEYS : (mine ? PARTICIPANT_STATUS_KEYS : VIEWER_STATUS_KEYS),
     mine,
+    nextStops,
   };
 }
 
@@ -1359,6 +1383,7 @@ function parseBrowse(query, id, opts) {
   const q = one('q');
   const sort = one('sort');
   const mine = one('mine');
+  const next = one('next');
   const stars = one('stars');
   const view = one('view');
   return {
@@ -1368,6 +1393,7 @@ function parseBrowse(query, id, opts) {
     sort: SORTS.includes(sort) ? sort : 'name',
     status: statusList(one('status'), opts),
     mine: opts.mine && MINE_KEYS.includes(mine) ? mine : '',
+    nextStops: opts.nextStops.includes(next) ? next : '',
     region: pickList(one('region'), regionList()),
     stars: stars !== null && STARS_RE.test(stars) ? Number(stars) : 0,
     view: view === 'list' ? 'list' : 'map',
@@ -1375,7 +1401,7 @@ function parseBrowse(query, id, opts) {
 }
 
 const validQuery = (b) => b.q.trim() !== '' && codePoints(b.q) <= MAX_QUERY;
-const filterCount = (b) => [b.status.length, b.mine, b.region.length, b.stars].filter(Boolean).length;
+const filterCount = (b) => [b.status.length, b.mine, b.nextStops, b.region.length, b.stars].filter(Boolean).length;
 
 // The canonical address, built only from validated values; defaults are omitted.
 function browseHash(b) {
@@ -1386,6 +1412,7 @@ function browseHash(b) {
   if (b.sort !== 'name') params.set('sort', b.sort);
   if (b.status.length) params.set('status', b.status.join(','));
   if (b.mine) params.set('mine', b.mine);
+  if (b.nextStops) params.set('next', b.nextStops);
   if (b.region.length) params.set('region', b.region.join(','));
   if (b.stars) params.set('stars', String(b.stars));
   if (b.view === 'list') params.set('view', 'list');
@@ -1417,7 +1444,14 @@ function rowModel(s, country, personal, active) {
     rating: typeof s.avg_rating === 'number' && Number.isFinite(s.avg_rating) ? s.avg_rating : null,
     completedOn: typeof s.completed_on === 'string' && DAY_RE.test(s.completed_on) ? s.completed_on : null,
     progress,
+    nextPeople: nextStopPeople(s.next_stop_user_ids),
   };
+}
+
+function nextStopMatches(r, value) {
+  if (value === 'mine') return r.s.my_next_stop === true;
+  if (value === 'ours') return r.s.shared_next_stop === true;
+  return r.nextPeople.length > 0 || r.s.shared_next_stop === true;
 }
 
 // Filter values match display states, except on personal passports, where
@@ -1435,6 +1469,7 @@ function rowShown(r, b) {
   if (search.on && !(search.matches && search.matches.has(r.code))) return false;
   if (b.status.length && !b.status.some((st) => statusMatches(r, st, b.opts))) return false;
   if (b.mine && (r.s.done_by_me === true) !== (b.mine === 'done')) return false;
+  if (b.nextStops && !nextStopMatches(r, b.nextStops)) return false;
   if (b.region.length && !b.region.includes(r.region)) return false;
   return !b.stars || (r.rating !== null && r.rating >= b.stars);
 }
@@ -1501,6 +1536,7 @@ function applyBrowse() {
     colourMap(rows);
   } else {
     $('country-list').innerHTML = countryListHtml(rows, b);
+    fillNextStopSlots($('country-list'), rows);
   }
   const n = filterCount(b);
   $('filters-open').textContent = n ? t('browse.filters_count', { count: n }) : t('browse.filters');
@@ -1541,6 +1577,7 @@ function clearBrowse() {
   resetSearch();
   browse = null;
   browseRows = [];
+  browseActive = 0;
   $('browse-q').value = '';
   $('browse-sort').value = 'name';
   $('filters-open').textContent = t('browse.filters');
@@ -1640,7 +1677,7 @@ $('browse-sort').addEventListener('change', () => {
 $('browse-clear').addEventListener('click', () => {
   if (!onBrowsePage()) return;
   resetSearch();
-  Object.assign(browse, { q: '', sort: 'name', status: [], mine: '', region: [], stars: 0 });
+  Object.assign(browse, { q: '', sort: 'name', status: [], mine: '', nextStops: '', region: [], stars: 0 });
   showBrowseControls();
   applyBrowse();
   writeBrowseAddress();
@@ -1674,6 +1711,13 @@ function syncFilters() {
   }
   $('filters-mine').hidden = !opts.mine;
   for (const radio of form.querySelectorAll('input[name="mine"]')) radio.checked = radio.value === browse.mine;
+  // Personal passports have one list, so its option names it in full.
+  $('filter-next-mine').textContent = opts.personal ? t('filters.next_mine_personal') : t('filters.next_mine');
+  $('filter-next-anyone').textContent = opts.personal ? t('filters.next_anyone_personal') : t('filters.next_anyone');
+  for (const radio of form.querySelectorAll('input[name="next"]')) {
+    radio.closest('label').hidden = radio.value !== '' && !opts.nextStops.includes(radio.value);
+    radio.checked = radio.value === browse.nextStops;
+  }
   $('filters-region-group').hidden = regionList().length === 0;
   $('filters-regions').replaceChildren(...regionList().map(regionCheck));
   $('filters-stars').value = browse.stars ? String(browse.stars) : '';
@@ -1687,9 +1731,11 @@ function readFilters() {
   const status = checkedValues(form, 'status');
   const regions = checkedValues(form, 'region');
   const mine = form.querySelector('input[name="mine"]:checked')?.value;
+  const next = form.querySelector('input[name="next"]:checked')?.value;
   const stars = $('filters-stars').value;
   browse.status = browse.opts.statuses.filter((v) => status.has(v));
   browse.mine = browse.opts.mine && MINE_KEYS.includes(mine) ? mine : '';
+  browse.nextStops = browse.opts.nextStops.includes(next) ? next : '';
   browse.region = regionList().filter((r) => regions.has(r));
   browse.stars = STARS_RE.test(stars) ? Number(stars) : 0;
 }
@@ -1709,7 +1755,7 @@ $('filters-form').addEventListener('change', () => {
 
 $('filters-clear').addEventListener('click', () => {
   if (!onBrowsePage()) return;
-  Object.assign(browse, { status: [], mine: '', region: [], stars: 0 });
+  Object.assign(browse, { status: [], mine: '', nextStops: '', region: [], stars: 0 });
   syncFilters();
   applyBrowse();
   writeBrowseAddress();
@@ -2368,12 +2414,26 @@ function openMapCard(code, clientY) {
   card.classList.toggle('map-card-bottom', !top);
   card.hidden = false;
   mapCardCode = code;
+  fillMapCardNext();
+}
+
+// The card's next-stop buttons, from the country's current row.
+function fillMapCardNext() {
+  const row = mapCardCode !== null ? browseRows.find((r) => r.code === mapCardCode) : null;
+  if (row) {
+    fillNextStopButtons($('map-card-next'), mapCardCode, rowNextState(row));
+  } else {
+    $('map-card-next').replaceChildren();
+    $('map-card-next').hidden = true;
+  }
 }
 
 function closeMapCard() {
   mapCardCode = null;
   $('map-card').hidden = true;
   for (const id of ['map-card-flag', 'map-card-name', 'map-card-status']) $(id).textContent = '';
+  $('map-card-next').replaceChildren();
+  $('map-card-next').hidden = true;
 }
 
 $('map-card-open').addEventListener('click', () => {
@@ -2522,6 +2582,23 @@ function stopPick() {
   $('pick-place').classList.add('is-pending');
   $('pick-board').disabled = false;
   for (const button of pickButtons()) button.disabled = true;
+  $('pick-next').replaceChildren();
+  $('pick-next').hidden = true;
+}
+
+// The board has settled on pickCurrent (its result buttons are about to be, or are, usable).
+const pickSettled = () => pickCurrent !== null && pickDialog.open && $('pick-board').disabled;
+
+// The pick result's next-stop buttons, from the picked country's current row.
+function fillPickNext() {
+  const p = pickCurrent;
+  const row = p && browse && p.id === browse.id ? browseRows.find((r) => r.code === p.code) : null;
+  if (row) {
+    fillNextStopButtons($('pick-next'), p.code, rowNextState(row));
+  } else {
+    $('pick-next').replaceChildren();
+    $('pick-next').hidden = true;
+  }
 }
 
 // A name as board rows of code points (each at most `cols`): upper-cased,
@@ -2706,6 +2783,7 @@ function settlePick() {
     const canLog = canLogMeals();
     $('pick-log').hidden = !canLog;
     for (const button of pickButtons()) button.disabled = false;
+    fillPickNext();
     (canLog ? $('pick-log') : $('pick-country')).focus();
   });
 }
@@ -2886,7 +2964,7 @@ function showCountry(code, data, countries) {
   const personal = passport.passport.is_personal === true;
   const participants = Array.isArray(data.participants) ? data.participants : [];
   const meals = (Array.isArray(data.meals) ? data.meals : []).filter((m) => m && ID_RE.test(String(m.id)));
-  countryDetail = { code, name: countryName(code, country.name), meals };
+  countryDetail = { code, name: countryName(code, country.name), meals, next: detailNextState(data, participants) };
   $('country-flag').textContent = flagFor(code);
   $('country-name').textContent = countryDetail.name;
   $('country-region').textContent = typeof country.region === 'string' ? regionName(country.region) : '';
@@ -2897,8 +2975,9 @@ function showCountry(code, data, countries) {
   $('country-avg').hidden = !hasAvg;
   $('country-people-card').hidden = personal;
   $('country-participants').innerHTML = personal ? '' : participants.map(countryPersonHtml).join('');
-  fillAvatarSlots($('country-participants'), participants, 'avatar-sm');
+  fillAvatarSlots($('country-participants'), personal ? [] : participants, 'avatar-sm');
   $('log-meal-open').hidden = !canLogMeals();
+  showNextStops();
   $('meal-list').replaceChildren(...meals.map(mealCard));
   $('meals-empty').hidden = meals.length > 0;
 }
@@ -2939,6 +3018,333 @@ $('meal-list').addEventListener('click', (event) => {
   if (button.dataset.mealAction === 'edit') openMealDialog(meal);
   else if (button.dataset.mealAction === 'delete') openDeleteMeal(meal);
 });
+
+// ---- Next stops (contract 11b): list badges, toggle buttons, country page lines ----
+
+const NEXT_LISTS = ['mine', 'ours'];
+// A map pin with a round hole (fixed path data; never from the server).
+const PIN_PATH = 'M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z'
+  + 'M12 11.5a2.5 2.5 0 1 1 0-5a2.5 2.5 0 1 1 0 5z';
+
+// Summary ids resolved to this passport's active participants by integer id;
+// unknown ids and repeats are skipped, and never more than there are participants.
+function nextStopPeople(ids) {
+  const participants = passport && Array.isArray(passport.participants) ? passport.participants : [];
+  const people = [];
+  for (const id of Array.isArray(ids) ? ids : []) {
+    if (people.length >= participants.length) break;
+    if (!Number.isInteger(id) || people.some((p) => p.id === id)) continue;
+    const person = participants.find((m) => m.id === id && m.inactive !== true);
+    if (person) people.push(person);
+  }
+  return people;
+}
+
+// The country page's people: person objects with an integer id and a name, no repeats.
+function detailPeople(list) {
+  const max = passport && Array.isArray(passport.participants) ? passport.participants.length : 0;
+  const people = [];
+  for (const p of Array.isArray(list) ? list : []) {
+    if (people.length >= max) break;
+    if (!isPlainObject(p) || !Number.isInteger(p.id) || typeof p.display_name !== 'string') continue;
+    if (!people.some((q) => q.id === p.id)) people.push(p);
+  }
+  return people;
+}
+
+function pinEl() {
+  const svg = svgEl('svg', 'next-stop-pin');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+  const path = svgEl('path');
+  path.setAttribute('d', PIN_PATH);
+  svg.append(path);
+  return svg;
+}
+
+// A list row's group: avatars of the people with it on their own list, the
+// pin if it's on the shared list, and the same as hidden text. Null if neither.
+function nextStopBadge(r) {
+  const people = r.nextPeople;
+  const shared = r.s.shared_next_stop === true;
+  if (people.length === 0 && !shared) return null;
+  const group = document.createElement('span');
+  group.className = 'next-stop-badge';
+  for (const p of people) group.append(avatarEl(p.avatar_seed, 'avatar-sm'));
+  if (shared) group.append(pinEl());
+  const names = people.map(memberName).join(t('nextstops.name_separator'));
+  let label = t('nextstops.shared');
+  if (people.length && shared) label = t('nextstops.badge_both', { names });
+  else if (people.length) label = t('nextstops.badge_people', { names });
+  group.append(textEl('span', label, 'visually-hidden'));
+  return group;
+}
+
+// Pairs each fixed .next-stop-slot just rendered by innerHTML with the same
+// rows, by index. On a count mismatch every slot stays empty (hidden by CSS).
+function fillNextStopSlots(container, rows) {
+  const slots = container.querySelectorAll('.next-stop-slot');
+  if (slots.length !== rows.length) {
+    console.error('next-stop slots and rows differ in number'); // i18n-ok developer message
+    return;
+  }
+  slots.forEach((slot, i) => {
+    const group = nextStopBadge(rows[i]);
+    if (group) slot.replaceWith(group);
+  });
+}
+
+// What the buttons show, from a list row: {mine (null for viewers), ours, and
+// whether an add would be refused}.
+function rowNextState(r) {
+  const s = r.s;
+  return {
+    mine: typeof s.my_next_stop === 'boolean' ? s.my_next_stop : null,
+    ours: s.shared_next_stop === true,
+    ...summaryBlocked(s),
+  };
+}
+
+// Whether adding to each list would be refused, from a country summary.
+function summaryBlocked(s) {
+  const personal = passport !== null && passport.passport.is_personal === true;
+  return {
+    mineBlocked: personal ? personalDone(s) : s.done_by_me === true,
+    oursBlocked: s.status === 'complete',
+  };
+}
+
+// The same from the country detail (or a toggle response, with its summary).
+function nextFromResponse(data) {
+  const personal = passport !== null && passport.passport.is_personal === true;
+  const ns = isPlainObject(data.next_stops) ? data.next_stops : {};
+  const shared = !personal && isPlainObject(ns.shared) ? ns.shared : null;
+  return {
+    mine: typeof data.my_next_stop === 'boolean' ? data.my_next_stop : null,
+    ours: shared !== null,
+    shared,
+    people: detailPeople(ns.people),
+  };
+}
+
+function detailNextState(data, participants) {
+  const me = participants.filter((p) => p && Number.isInteger(p.id) && state.user && p.id === state.user.id);
+  return {
+    ...nextFromResponse(data),
+    mineBlocked: me.length === 1 && me[0].done === true,
+    oursBlocked: data.status === 'complete',
+  };
+}
+
+function nextStopButton(list, on, disabled) {
+  const personal = passport.passport.is_personal === true;
+  let label = t('nextstops.ours');
+  if (list === 'mine') label = personal ? t('nextstops.personal') : t('nextstops.mine');
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.className = 'btn next-stop-btn'; // i18n-ok CSS class names
+  button.dataset.nextList = list;
+  button.setAttribute('aria-pressed', String(on));
+  button.disabled = disabled;
+  const mark = textEl('span', on ? '✓' : '+', 'next-stop-mark');
+  mark.setAttribute('aria-hidden', 'true');
+  button.append(mark, textEl('span', label));
+  return button;
+}
+
+// Fills a button row for one country: owners and participants only, and only
+// when the server gave a boolean my_next_stop; "Ours" never on personal
+// passports. An add that would be refused is disabled while off.
+function fillNextStopButtons(container, code, st) {
+  const id = passport ? String(passport.passport.id) : '';
+  const show = canLogMeals() && typeof st.mine === 'boolean' && ID_RE.test(id) && CODE_RE.test(code);
+  container.hidden = !show;
+  if (!show) {
+    container.replaceChildren();
+    return [];
+  }
+  const busy = nextStopBusy.has(`${id}:${code}`);
+  const buttons = [nextStopButton('mine', st.mine, busy || (!st.mine && st.mineBlocked))];
+  if (passport.passport.is_personal !== true) {
+    buttons.push(nextStopButton('ours', st.ours, busy || (!st.ours && st.oursBlocked)));
+  }
+  container.replaceChildren(...buttons);
+  return buttons;
+}
+
+function nextStopPeopleLine(people) {
+  const line = document.createElement('div');
+  line.className = 'next-stop-line';
+  const list = document.createElement('ul');
+  list.className = 'next-stop-people';
+  for (const p of people) {
+    const item = document.createElement('li');
+    item.append(avatarEl(p.avatar_seed, 'avatar-sm'), textEl('span', memberName(p)));
+    list.append(item);
+  }
+  line.append(textEl('p', t('nextstops.people')), list);
+  return line;
+}
+
+// added_by null (or not a person) means no name: the adder has left or been removed.
+function nextStopSharedLine(shared) {
+  const by = shared.added_by;
+  const named = isPlainObject(by) && typeof by.display_name === 'string';
+  const line = textEl('p', '', 'next-stop-shared');
+  line.append(pinEl(), textEl('span', named ? t('nextstops.shared_by', { name: memberName(by) }) : t('nextstops.shared')));
+  return line;
+}
+
+function nextStopLines(next, personal) {
+  const lines = [];
+  if (personal) {
+    // The owner reads "your"; a viewer sees whose list it is.
+    if (next.mine === true) lines.push(textEl('p', t('nextstops.yours')));
+    else if (next.mine === null && next.people.length) lines.push(nextStopPeopleLine(next.people));
+    return lines;
+  }
+  if (next.people.length) lines.push(nextStopPeopleLine(next.people));
+  if (next.shared) lines.push(nextStopSharedLine(next.shared));
+  if (!lines.length) lines.push(textEl('p', t('nextstops.none'), 'muted'));
+  return lines;
+}
+
+// The country page's Next stops section: buttons, a hint for a refused add, the lines.
+function showNextStops() {
+  const { next, code } = countryDetail;
+  const personal = passport.passport.is_personal === true;
+  const buttons = fillNextStopButtons($('country-next-buttons'), code, next);
+  const shown = (list) => buttons.some((b) => b.dataset.nextList === list);
+  let hint = '';
+  if (shown('ours') && !next.ours && next.oursBlocked) hint = t('nextstops.hint_complete');
+  else if (shown('mine') && !next.mine && next.mineBlocked) hint = t('nextstops.hint_done');
+  $('country-next-hint').textContent = hint;
+  $('country-next-hint').hidden = !hint;
+  const lines = nextStopLines(next, personal);
+  $('country-next-lines').replaceChildren(...lines);
+  $('country-next-lines').hidden = lines.length === 0;
+  $('country-next-card').hidden = buttons.length === 0 && lines.length === 0;
+}
+
+function nextStopToast(list, on) {
+  if (passport && passport.passport.is_personal === true) return on ? t('toast.next_added') : t('toast.next_removed');
+  if (list === 'ours') return on ? t('toast.next_ours_added') : t('toast.next_ours_removed');
+  return on ? t('toast.next_mine_added') : t('toast.next_mine_removed');
+}
+
+// Redraws every open set of buttons for this country (page, map card, pick
+// result). If focus was on the row when tapped (refocus), it goes back to the
+// toggled list's new button, unless the user has moved it elsewhere meanwhile.
+function refreshNextStopUi(code, container, list, refocus) {
+  if (currentView === 'country' && countryDetail && countryDetail.code === code) showNextStops();
+  if (mapCardCode === code) fillMapCardNext();
+  if (pickSettled() && pickCurrent.code === code) fillPickNext();
+  const active = document.activeElement;
+  // A removed focused button leaves focus on <body>, or on the dialog inside a modal.
+  const lost = !active || active === document.body || (active.tagName === 'DIALOG' && active.contains(container));
+  if (refocus && NEXT_LISTS.includes(list) && lost && container.isConnected && !container.hidden) {
+    container.querySelector(`button[data-next-list="${list}"]:not(:disabled)`)?.focus();
+  }
+}
+
+// Merges a toggle response (already checked to be for this passport and code)
+// into the list row and the country page, then re-applies the browse state.
+function applyNextStopResponse(code, data) {
+  nextStopGen += 1;
+  const id = String(passport.passport.id);
+  const i = browseRows.findIndex((r) => r.code === code);
+  if (browse && browse.id === id && i >= 0) {
+    browseRows[i] = rowModel(data.summary, browseRows[i].country, browse.opts.personal, browseActive);
+    if (onBrowsePage()) applyBrowse();
+  }
+  if (countryDetail && countryDetail.code === code) {
+    countryDetail.next = { ...nextFromResponse(data), ...summaryBlocked(data.summary) };
+  }
+}
+
+// After a 409 the shown state was out of date: re-read the country page or
+// the list. The result is dropped if a newer toggle response or re-read came first.
+async function reloadNextStops(token, id) {
+  const gen = ++nextStopGen;
+  const code = currentView === 'country' && countryDetail ? countryDetail.code : null;
+  if (code === null && (!onBrowsePage() || browse.id !== id)) return;
+  if (code !== null && !(CODE_RE.test(code) && countriesCache && countriesCache.has(code))) return;
+  let data;
+  try {
+    data = await passportRequest('GET', code === null ? '/countries' : `/countries/${code}`);
+  } catch (err) {
+    if (err instanceof QuietError) return;
+    // A gone passport has already moved the page on (new routeToken); say why anyway.
+    const gone = err.status === 404 && err.code === 'passport_not_found';
+    if (gone || token === routeToken) toast(err.message, 'error');
+    return;
+  }
+  if (gen !== nextStopGen || token !== routeToken || !passport || String(passport.passport.id) !== id) return;
+  if (code !== null) {
+    if (currentView === 'country' && countryDetail && countryDetail.code === code) {
+      showCountry(code, data, countriesCache);
+    }
+    return;
+  }
+  if (!onBrowsePage() || browse.id !== id || !countriesCache) return;
+  setCountryRows(data, countriesCache);
+  applyBrowse();
+  if (mapCardCode !== null) fillMapCardNext();
+  if (pickSettled()) fillPickNext();
+}
+
+// Sets (not toggles) one list for one country: `on` is the opposite of the
+// button's pressed state when tapped. The response is used only if the page,
+// passport and country are still the ones it was sent for.
+async function toggleNextStop(button, code, container) {
+  const list = button.dataset.nextList;
+  if (button.disabled || !passport || !canLogMeals() || !NEXT_LISTS.includes(list)) return;
+  if (list === 'ours' && passport.passport.is_personal === true) return;
+  if (!CODE_RE.test(code) || !countriesCache || !countriesCache.has(code)) return;
+  const id = String(passport.passport.id);
+  const key = `${id}:${code}`;
+  if (!ID_RE.test(id) || nextStopBusy.has(key)) return;
+  const on = button.getAttribute('aria-pressed') !== 'true';
+  const token = routeToken;
+  const refocus = container.contains(document.activeElement);
+  nextStopBusy.add(key);
+  refreshNextStopUi(code, container, list, false);
+  let data;
+  try {
+    data = await passportRequest('POST', `/countries/${code}/next-stops`, { list, on });
+  } catch (err) {
+    nextStopBusy.delete(key);
+    if (err instanceof QuietError) return;
+    // Only on the page it was made from; a gone passport has already moved the page on, so say why.
+    const gone = err.status === 404 && err.code === 'passport_not_found';
+    if (gone || token === routeToken) toast(err.message, 'error');
+    refreshNextStopUi(code, container, list, refocus);
+    if (err.status === 409 && token === routeToken) reloadNextStops(token, id);
+    return;
+  }
+  nextStopBusy.delete(key);
+  if (token === routeToken) toast(nextStopToast(list, on));
+  const current = token === routeToken && passport !== null && String(passport.passport.id) === id;
+  if (current && isPlainObject(data.summary) && data.summary.code === code) applyNextStopResponse(code, data);
+  refreshNextStopUi(code, container, list, refocus);
+}
+
+// Each button row knows its country from the page state, never from the DOM.
+const NEXT_STOP_ROWS = [
+  ['country-next-buttons', () => (currentView === 'country' && countryDetail ? countryDetail.code : null)],
+  ['map-card-next', () => (onBrowsePage() ? mapCardCode : null)],
+  ['pick-next', () => (onBrowsePage() && pickSettled() ? pickCurrent.code : null)],
+];
+
+for (const [containerId, codeOf] of NEXT_STOP_ROWS) {
+  const container = $(containerId);
+  container.addEventListener('click', (event) => {
+    const button = event.target.closest('button[data-next-list]');
+    const code = codeOf();
+    if (button && container.contains(button) && typeof code === 'string') toggleNextStop(button, code, container);
+  });
+}
 
 // ---- Meal dialogs ----
 

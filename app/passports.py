@@ -205,6 +205,18 @@ def remove_user_data(conn, user_id):
     conn.execute("DELETE FROM passports WHERE owner_id = ? AND is_personal = 1", (user_id,))
 
 
+def shared_participations(conn, user_id):
+    """Ids of non-personal passports where the user is a participant (whose completeness they affect)."""
+    return [row[0] for row in conn.execute(
+        "SELECT passports.id FROM passport_members JOIN passports ON passports.id = passport_members.passport_id "
+        "WHERE passport_members.user_id = ? AND passport_members.role = 'participant' "
+        "AND passports.is_personal = 0 ORDER BY passports.id", (user_id,))]
+
+
+def passport_exists(conn, passport_id):
+    return conn.execute("SELECT 1 FROM passports WHERE id = ?", (passport_id,)).fetchone() is not None
+
+
 def other_membership_count(conn, user_id):
     """Passports the user takes part in or views but doesn't own."""
     return conn.execute(

@@ -512,6 +512,30 @@ class CodeTests(ErrorAssertions, PassportTestCase):
     def test_search_term_length(self):
         self.assert_code(self.search("x" * 51), 400, "search_term_length", {"max": search.MAX_TERM})
 
+    # Next stops
+
+    def next_stop(self, pid, body, code="PE", token="default"):
+        return self.api("POST", f"/api/passports/{pid}/countries/{code}/next-stops", body, token=token)
+
+    def test_next_stop_list_invalid(self):
+        self.assert_code(self.next_stop(1, {"list": "Mine", "on": True}), 400, "next_stop_list_invalid")
+
+    def test_next_stop_on_invalid(self):
+        self.assert_code(self.next_stop(1, {"list": "mine", "on": 1}), 400, "next_stop_on_invalid")
+
+    def test_personal_no_shared(self):
+        self.assert_code(self.next_stop(1, {"list": "ours", "on": True}), 409, "personal_no_shared")
+
+    def test_next_stop_done(self):
+        self.log_meal(1)
+        self.assert_code(self.next_stop(1, {"list": "mine", "on": True}), 409, "next_stop_done")
+
+    def test_next_stop_complete(self):
+        pid, _, bob_token, _ = self.shared()
+        self.log_meal(pid)
+        self.log_meal(pid, token=bob_token)
+        self.assert_code(self.next_stop(pid, {"list": "ours", "on": True}), 409, "next_stop_complete")
+
 
 # --- The new static file (contract 10 §2) ---
 

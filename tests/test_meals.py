@@ -10,9 +10,11 @@ from tests.test_passports import NOT_FOUND, PENDING, PERSON_KEYS, PassportTestCa
 import countries  # noqa: E402  (app/ is on sys.path via tests.helpers)
 import db  # noqa: E402
 
-SUMMARY_KEYS = {"code", "status", "done_by_me", "meal_count", "avg_rating", "completed_on", "done_count"}
+SUMMARY_KEYS = {"code", "status", "done_by_me", "meal_count", "avg_rating", "completed_on", "done_count",
+                "my_next_stop", "next_stop_user_ids", "shared_next_stop"}
 PROGRESS_KEYS = {"total", "complete", "mine", "active_participants"}
-DETAIL_KEYS = {"country", "status", "completed_on", "avg_rating", "participants", "meals"}
+DETAIL_KEYS = {"country", "status", "completed_on", "avg_rating", "participants", "meals", "my_next_stop",
+               "next_stops"}
 PARTICIPANT_KEYS = PERSON_KEYS | {"is_owner", "done", "completed_on"}
 MEAL_KEYS = {"id", "user", "eaten_on", "dish", "place", "rating", "notes", "mine"}
 
@@ -454,7 +456,8 @@ class DerivedTests(MealTestCase):
         self.meal_id(self.pid, "PE", eaten_on="2026-10-11")
         pe = self.summary(self.pid, "PE")
         self.assertEqual(pe, {"code": "PE", "status": "some", "done_by_me": True, "meal_count": 1,
-                              "avg_rating": None, "completed_on": None, "done_count": 1})
+                              "avg_rating": None, "completed_on": None, "done_count": 1,
+                              "my_next_stop": False, "next_stop_user_ids": [], "shared_next_stop": False})
         self.assertFalse(self.summary(self.pid, "PE", token=self.bob_token)["done_by_me"])
         self.assertIsNone(self.summary(self.pid, "PE", token=self.sam_token)["done_by_me"])
 
