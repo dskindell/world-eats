@@ -180,7 +180,8 @@ const SVG_NS = 'http://www.w3.org/2000/svg'; // security-lint: ok XML namespace 
 // ---- Avatars (contract 11a §4): one builder, DOM only ----
 
 const AVATAR_SEED_RE = /^[0-9a-f]{32}$/;
-const AVATAR_SIZES = ['avatar-sm', 'avatar-md', 'avatar-lg'];
+// avatar-pin: a map pin's head, sized by its x/y/width/height attributes (no CSS size).
+const AVATAR_SIZES = ['avatar-sm', 'avatar-md', 'avatar-lg', 'avatar-pin'];
 const AVATAR_ALL_CELLS = 0x7fff;
 const AVATAR_MIN_CELLS = 4;
 
@@ -1158,6 +1159,7 @@ async function enterPassport(id, token, _code, query) {
   if (mapPassportId !== id) {
     cancelMapAnim();
     clearMapPick();
+    clearPins();
     resetMapView();
     mapPassportId = id;
   }
@@ -1386,6 +1388,7 @@ function parseBrowse(query, id, opts) {
   const next = one('next');
   const stars = one('stars');
   const view = one('view');
+  const pins = one('pins');
   return {
     id,
     opts,
@@ -1397,6 +1400,8 @@ function parseBrowse(query, id, opts) {
     region: pickList(one('region'), regionList()),
     stars: stars !== null && STARS_RE.test(stars) ? Number(stars) : 0,
     view: view === 'list' ? 'list' : 'map',
+    // Only an exact pins=0 turns them off; not a filter (no count, not cleared by Clear).
+    pins: pins !== '0',
   };
 }
 
@@ -1416,6 +1421,7 @@ function browseHash(b) {
   if (b.region.length) params.set('region', b.region.join(','));
   if (b.stars) params.set('stars', String(b.stars));
   if (b.view === 'list') params.set('view', 'list');
+  if (!b.pins) params.set('pins', '0');
   const query = params.toString();
   return query ? `#/passports/${id}?${query}` : `#/passports/${id}`;
 }
@@ -1805,6 +1811,14 @@ let mapCardCode = null;
 // that wasn't waiting for a search ({id, codes}).
 let mapMoveFrame = 0;
 let mapShown = null;
+// Next stops pins (contract 11c): the layer, its drawn groups ({el, code, x, y},
+// southern last), the key of the drawn pin data ('' if none), pin data waiting
+// for a usable scale ({key, entries}), and the codes left undimmed.
+let mapPinsLayer = null;
+let mapPinGroups = [];
+let mapPinsKey = '';
+let mapPinsWanted = null;
+let mapPinsShown = null;
 
 function svgEl(tag, cls) {
   const el = document.createElementNS(SVG_NS, tag);
@@ -1815,7 +1829,7 @@ function svgEl(tag, cls) {
 const isPlainObject = (v) => v !== null && typeof v === 'object' && Object.getPrototypeOf(v) === Object.prototype;
 const mapSize = (n) => typeof n === 'number' && Number.isFinite(n) && n >= 1 && n <= 10000;
 const mapPath = (d) => typeof d === 'string' && d.length > 0 && d.length <= MAP_MAX_PATH && MAP_PATH_RE.test(d);
-const finiteIn = (n, max) => typeof n === 'number' && Number.isFinite(n) && n >= 0 && n <= max;
+const finiteIn = (n, lo, hi) => typeof n === 'number' && Number.isFinite(n) && n >= lo && n <= hi;
 
 // Returns the usable parts of map.json, or null if it can't be drawn. Bad
 // entries are skipped; only codes in the country list are kept.
@@ -1835,10 +1849,24 @@ function parseMap(json) {
   for (const code of isPlainObject(json.dots) ? Object.keys(json.dots) : []) {
     if (!CODE_RE.test(code) || !countries.has(code)) continue;
     const p = json.dots[code];
-    if (Array.isArray(p) && p.length === 2 && finiteIn(p[0], width) && finiteIn(p[1], height)) dots.set(code, [p[0], p[1]]);
+    if (Array.isArray(p) && p.length === 2 && finiteIn(p[0], 0, width) && finiteIn(p[1], 0, height)) dots.set(code, [p[0], p[1]]);
   }
   const other = Array.isArray(json.other) ? json.other.slice(0, MAP_MAX_OTHER).filter(mapPath) : [];
-  return { width, height, countries, dots, other };
+  return { width, height, countries, dots, other, anchors: parseAnchors(json.anchors, countries, width, height) };
+}
+
+// Pin anchors ({code: [x, y]}, contract 11c §2): a bad or missing entry just means no pin there.
+function parseAnchors(raw, countries, width, height) {
+  const anchors = new Map();
+  for (const code of isPlainObject(raw) ? Object.keys(raw) : []) {
+    if (anchors.size >= MAP_MAX_COUNTRIES) break;
+    if (!CODE_RE.test(code) || !countries.has(code)) continue;
+    const p = raw[code];
+    if (Array.isArray(p) && p.length === 2 && finiteIn(p[0], -1, width + 1) && finiteIn(p[1], -1, height + 1)) {
+      anchors.set(code, [p[0], p[1]]);
+    }
+  }
+  return anchors;
 }
 
 function showMapStatus(message, failed = false) {
@@ -1909,7 +1937,12 @@ function buildMap() {
     mapShapes.push({ el: dot, code, base: 'map-dot' });
     mapDots.push({ el: dot, code, x, y });
   }
-  mapSvg.replaceChildren(other, lands, dots);
+  // Pins go last, above every country and dot.
+  mapPinsLayer = svgEl('g', 'map-pins');
+  mapPinsLayer.setAttribute('aria-hidden', 'true');
+  mapPinsLayer.classList.toggle('map-pins-off', !!browse && !browse.pins);
+  clearPins();
+  mapSvg.replaceChildren(other, lands, dots, mapPinsLayer);
   mapBuilt = true;
   resetMapView();
 }
@@ -1950,6 +1983,7 @@ function showViewMode() {
   $('legend-some').hidden = personal || mine;
   $('legend-your-turn').hidden = !mine;
   $('legend-waiting').hidden = !mine;
+  showPinsUi();
   if (map) ensureMap();
 }
 
@@ -1993,7 +2027,11 @@ function mapShownCodes(rows) {
 // The picked country's shapes are moved to the end of their group so
 // neighbours drawn later don't cover its highlight.
 function colourMap(rows) {
-  if (!mapBuilt || !browse) return;
+  if (!mapBuilt) return;
+  if (!browse) {
+    clearPins();
+    return;
+  }
   const byCode = new Map(browseRows.map((r) => [r.code, r]));
   const shown = mapShownCodes(rows);
   const pickedCode = mapPicked && mapPicked.id === browse.id ? mapPicked.code : null;
@@ -2003,8 +2041,234 @@ function colourMap(rows) {
     if (code === pickedCode) picked.push(el);
   }
   for (const el of picked) el.parentNode.append(el);
+  updatePins(shown);
   mapSvg.setAttribute('aria-label', passport ? t('map.label_named', { name: passport.passport.name }) : t('map.label'));
 }
+
+// ---- World map: Next stops pins (contract 11c §3, §7) ----
+
+// Screen pixels inside a pin group (scaled by map units per pixel).
+const PIN_HEAD_R = 10;
+const PIN_HEAD_Y = -24;
+const PIN_HEAD_STEP = 13;
+const PIN_ICON = 12;
+const PIN_MAX_HEADS = 3;
+// A pin whose anchor is closer than this to the top of the frame hangs below
+// it instead (head top, rim included, is about 35 px above the anchor).
+const PIN_FLIP_PX = 36;
+// Flipped: the needles mirrored (lines only) and the heads moved below the
+// anchor; avatars and "+N" are moved, never mirrored.
+const PIN_FLIP_NEEDLES = 'scale(1 -1)';
+const PIN_FLIP_HEADS = `translate(0 ${-2 * PIN_HEAD_Y})`;
+
+const validMapCode = (code) => typeof code === 'string' && CODE_RE.test(code) && countriesCache !== null
+  && countriesCache.has(code) && mapData !== null && mapData.countries.has(code);
+
+// Map units per screen pixel, or null when the map isn't laid out.
+function pinScale(rect = mapRect()) {
+  if (!rect || !mapView) return null;
+  const k = mapView.w / rect.width;
+  return Number.isFinite(k) && k > 0 ? k : null;
+}
+
+const pinTransform = (g, k) => `translate(${g.x} ${g.y}) scale(${k})`;
+
+function clearPins() {
+  mapPinGroups = [];
+  mapPinsKey = '';
+  mapPinsWanted = null;
+  if (mapPinsLayer) mapPinsLayer.replaceChildren();
+}
+
+// Shared first, then me, then the others in the order given. People come only
+// from the row (active participants); personal passports have no shared list.
+function pinHeads(r, personal) {
+  const me = state.user ? state.user.id : null;
+  const heads = [];
+  if (!personal && r.s.shared_next_stop === true) heads.push({ shared: true });
+  for (const p of r.nextPeople) if (p.id === me) heads.push({ person: p });
+  for (const p of r.nextPeople) if (p.id !== me) heads.push({ person: p });
+  return heads;
+}
+
+// One entry per country with a pin, northern first (so southern pins are drawn over them).
+function pinEntries() {
+  const entries = [];
+  for (const r of browseRows) {
+    const at = mapData.anchors.get(r.code);
+    if (!at || !validMapCode(r.code)) continue;
+    const heads = pinHeads(r, browse.opts.personal);
+    if (heads.length) entries.push({ code: r.code, x: at[0], y: at[1], heads });
+  }
+  return entries.sort((a, b) => a.y - b.y || (a.code < b.code ? -1 : 1));
+}
+
+// Identifies what the pins show, so they're rebuilt only when it changes (in memory only).
+const headKey = (h) => (h.person ? `${h.person.id}/${h.person.avatar_seed}` : 'shared');
+const pinsKey = (entries) => `${browse.id}|${entries.map((e) => `${e.code}:${e.heads.map(headKey).join(',')}`).join(';')}`;
+
+function setNumbers(el, attrs) {
+  for (const [name, n] of attrs) el.setAttribute(name, String(n));
+}
+
+function pinCircle(cls, hx) {
+  const c = svgEl('circle', cls);
+  setNumbers(c, [['cx', hx], ['cy', PIN_HEAD_Y], ['r', PIN_HEAD_R]]);
+  return c;
+}
+
+// A head's elements: the avatar, the shared pin on an accent disc, or "+N"; then the rim.
+function pinHead(head, hx) {
+  const box = [['x', hx - PIN_HEAD_R], ['y', PIN_HEAD_Y - PIN_HEAD_R], ['width', 2 * PIN_HEAD_R], ['height', 2 * PIN_HEAD_R]];
+  const parts = [];
+  if (head.person) {
+    const avatar = avatarEl(head.person.avatar_seed, 'avatar-pin');
+    setNumbers(avatar, box);
+    parts.push(avatar);
+  } else if (head.shared) {
+    const icon = pinEl('map-pin-icon');
+    const half = PIN_ICON / 2;
+    setNumbers(icon, [['x', hx - half], ['y', PIN_HEAD_Y - half], ['width', PIN_ICON], ['height', PIN_ICON]]);
+    parts.push(pinCircle('map-pin-shared', hx), icon);
+  } else {
+    const text = svgEl('text', 'map-pin-more-text');
+    setNumbers(text, [['x', hx], ['y', PIN_HEAD_Y]]);
+    text.textContent = t('map.pins_more', { n: head.more });
+    parts.push(pinCircle('map-pin-more', hx), text);
+  }
+  parts.push(pinCircle('map-pin-rim', hx));
+  return parts;
+}
+
+// One country's pin: shadow, needles, then heads left to right (each overlapping the last).
+// Returns the group and its needle and head groups (for flipPin()).
+function pinGroup(entry, k) {
+  const g = svgEl('g', 'map-pin');
+  g.setAttribute('data-code', entry.code);
+  g.setAttribute('transform', pinTransform(entry, k));
+  const shadow = svgEl('ellipse', 'map-pin-shadow');
+  setNumbers(shadow, [['cx', 0], ['cy', 0], ['rx', 4], ['ry', 1.5]]);
+  g.append(shadow);
+  const all = entry.heads;
+  const heads = all.length > PIN_MAX_HEADS ? [all[0], all[1], { more: all.length - 2 }] : all;
+  const xs = heads.map((_, i) => (i - (heads.length - 1) / 2) * PIN_HEAD_STEP);
+  const needles = svgEl('g');
+  for (const hx of xs) {
+    const needle = svgEl('line', 'map-pin-needle');
+    setNumbers(needle, [['x1', hx], ['y1', PIN_HEAD_Y + 9], ['x2', 0], ['y2', 0]]);
+    needles.append(needle);
+  }
+  const top = svgEl('g');
+  heads.forEach((head, i) => top.append(...pinHead(head, xs[i])));
+  g.append(needles, top);
+  return { el: g, needles, heads: top };
+}
+
+// Hangs a pin below its anchor near the top of the frame, and back above
+// once there's room. Attributes change only when the state does.
+function flipPin(g, rect) {
+  const flip = rect.height * ((g.y - mapView.y) / mapView.h) < PIN_FLIP_PX;
+  if (flip === g.flipped) return;
+  g.flipped = flip;
+  g.el.classList.toggle('map-pin-flipped', flip);
+  if (flip) {
+    g.needles.setAttribute('transform', PIN_FLIP_NEEDLES);
+    g.heads.setAttribute('transform', PIN_FLIP_HEADS);
+  } else {
+    g.needles.removeAttribute('transform');
+    g.heads.removeAttribute('transform');
+  }
+}
+
+// On pan (the zoom goes through scalePins): one comparison per pin.
+function flipPins(rect = mapRect()) {
+  if (!rect || !mapView) return;
+  for (const g of mapPinGroups) flipPin(g, rect);
+}
+
+// Draws the waiting pin data, if the map has a usable scale; otherwise the
+// layer stays empty until the next updateDotRadius().
+function drawPins(rect) {
+  const wanted = mapPinsWanted;
+  if (!wanted || !mapPinsLayer) return;
+  const k = pinScale(rect);
+  mapPinGroups = [];
+  mapPinsKey = '';
+  if (k === null) {
+    mapPinsLayer.replaceChildren();
+    return;
+  }
+  mapPinGroups = wanted.entries.map((e) => ({ ...pinGroup(e, k), code: e.code, x: e.x, y: e.y, flipped: false }));
+  flipPins(rect);
+  mapPinsLayer.replaceChildren(...mapPinGroups.map((g) => g.el));
+  mapPinsKey = wanted.key;
+  mapPinsWanted = null;
+}
+
+// Classes and order only: dimmed with their country; the picked one on top and never dimmed.
+function stylePins() {
+  if (!mapPinsLayer || !browse) return;
+  const pickedCode = mapPicked && mapPicked.id === browse.id ? mapPicked.code : null;
+  const shown = mapPinsShown;
+  let picked = null;
+  for (const g of mapPinGroups) {
+    g.el.classList.toggle('map-pin-dim', g.code !== pickedCode && shown !== null && !shown.has(g.code));
+    if (g.code === pickedCode) picked = g.el;
+  }
+  const order = mapPinGroups.map((g) => g.el).filter((el) => el !== picked);
+  if (picked) order.push(picked);
+  const children = mapPinsLayer.children;
+  if (order.some((el, i) => children[i] !== el)) mapPinsLayer.append(...order);
+}
+
+// From colourMap(): rebuilt only if the pin data changed; off or no anchors means none.
+function updatePins(shown) {
+  if (!mapPinsLayer) return;
+  mapPinsLayer.classList.toggle('map-pins-off', !browse.pins);
+  mapPinsShown = shown;
+  if (!browse.pins || mapData.anchors.size === 0) {
+    clearPins();
+    return;
+  }
+  const entries = pinEntries();
+  const key = pinsKey(entries);
+  if (key !== mapPinsKey) {
+    mapPinsWanted = { key, entries };
+    drawPins();
+  }
+  stylePins();
+}
+
+// With the dot radii: pins keep their screen size at every zoom (and draw if they were waiting).
+function scalePins(rect) {
+  if (mapPinsWanted) {
+    drawPins(rect);
+    stylePins();
+    return;
+  }
+  const k = pinScale(rect);
+  if (k === null) return;
+  const r = rect || mapRect();
+  for (const g of mapPinGroups) {
+    g.el.setAttribute('transform', pinTransform(g, k));
+    flipPin(g, r);
+  }
+}
+
+function showPinsUi() {
+  const on = browse ? browse.pins : true;
+  $('map-pins-toggle').setAttribute('aria-pressed', String(on));
+  $('legend-pins').hidden = !on;
+  if (mapPinsLayer) mapPinsLayer.classList.toggle('map-pins-off', !on);
+}
+
+$('map-pins-toggle').addEventListener('click', () => {
+  if (!onBrowsePage() || browse.view !== 'map') return;
+  browse.pins = !browse.pins;
+  showPinsUi();
+  applyBrowse();
+  writeBrowseAddress();
+});
 
 // ---- World map: zoom and pan (by the viewBox) ----
 
@@ -2022,6 +2286,7 @@ function updateDotRadius(rect = mapRect()) {
   const r = (MAP_DOT_PX * mapView.w) / rect.width;
   if (!Number.isFinite(r) || r <= 0) return;
   for (const { el } of mapDots) el.setAttribute('r', String(r));
+  scalePins(rect);
 }
 
 // Clamped so the map always fills the frame. Dot radii change only with the zoom.
@@ -2034,6 +2299,7 @@ function setMapView(x, y, w, h, rect) {
   mapView = { x: nx, y: ny, w, h };
   mapSvg.setAttribute('viewBox', `${nx} ${ny} ${w} ${h}`);
   if (zoomed) updateDotRadius(rect);
+  else flipPins(rect);
 }
 
 function resetMapView() {
@@ -2231,6 +2497,13 @@ function nearestDot(clientX, clientY) {
 // closes the card unless a dot is within reach. Where dots overlap, the one
 // whose centre is closest wins, not the one drawn last.
 function mapTap(target, clientX, clientY) {
+  // A pin (the topmost under the pointer) opens its own country.
+  const pin = target instanceof Element ? target.closest('.map-pin') : null;
+  const pinCode = pin && mapPinsLayer && mapPinsLayer.contains(pin) ? pin.getAttribute('data-code') : null;
+  if (validMapCode(pinCode)) {
+    openMapCard(pinCode, clientY);
+    return;
+  }
   let el = target instanceof Element ? target.closest('[data-code]') : null;
   if (el && !(mapSvg.contains(el) && (el.classList.contains('map-country') || el.classList.contains('map-dot')))) {
     el = null;
@@ -2280,6 +2553,7 @@ function finishMapAnim() {
 function clearMapPick() {
   mapPicked = null;
   for (const { el } of mapShapes) el.classList.remove('map-picked');
+  stylePins();
 }
 
 // The bounding box of the largest piece (by box area) of a validated path:
@@ -2375,6 +2649,7 @@ function zoomMapToPick(code) {
     el.classList.add('map-picked');
     el.parentNode.append(el);
   }
+  stylePins();
   const to = pickTargetView(code);
   if (!to) return;
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) {
@@ -2417,9 +2692,25 @@ function openMapCard(code, clientY) {
   fillMapCardNext();
 }
 
-// The card's next-stop buttons, from the country's current row.
+// Who has the country listed, from the row only (contract 11c §7.1): names,
+// no avatars, no adder; '' when it's on no list.
+function mapCardNextText(r) {
+  const personal = browse.opts.personal;
+  const people = r.nextPeople;
+  const shared = !personal && r.s.shared_next_stop === true;
+  if (personal && people.length && state.user && people[0].id === state.user.id) return t('nextstops.yours');
+  const names = people.map(memberName).join(t('nextstops.name_separator'));
+  if (people.length && shared) return t('map.card_next_both', { names });
+  if (people.length) return t('map.card_next_people', { names });
+  return shared ? t('nextstops.shared') : '';
+}
+
+// The card's next-stop line and buttons, from the country's current row.
 function fillMapCardNext() {
   const row = mapCardCode !== null ? browseRows.find((r) => r.code === mapCardCode) : null;
+  const line = row ? mapCardNextText(row) : '';
+  $('map-card-line').textContent = line;
+  $('map-card-line').hidden = !line;
   if (row) {
     fillNextStopButtons($('map-card-next'), mapCardCode, rowNextState(row));
   } else {
@@ -2431,7 +2722,8 @@ function fillMapCardNext() {
 function closeMapCard() {
   mapCardCode = null;
   $('map-card').hidden = true;
-  for (const id of ['map-card-flag', 'map-card-name', 'map-card-status']) $(id).textContent = '';
+  for (const id of ['map-card-flag', 'map-card-name', 'map-card-status', 'map-card-line']) $(id).textContent = '';
+  $('map-card-line').hidden = true;
   $('map-card-next').replaceChildren();
   $('map-card-next').hidden = true;
 }
@@ -2451,11 +2743,14 @@ function resetMapUi() {
   cancelMapAnim();
   clearMapGesture();
   closeMapCard();
+  clearPins();
+  mapPinsShown = null;
   for (const { el, base } of mapShapes) el.setAttribute('class', base);
   mapSvg.setAttribute('aria-label', t('map.label'));
   resetMapView();
   showMapStatus('');
   setViewUi(false);
+  showPinsUi();
 }
 
 // The parsed map and every shape go; the svg element itself stays, so its
@@ -2466,6 +2761,9 @@ function dropMap() {
   mapShapes = [];
   mapDots = [];
   mapView = null;
+  clearPins();
+  mapPinsLayer = null;
+  mapPinsShown = null;
   mapSvg.replaceChildren();
   mapSvg.removeAttribute('viewBox');
   $('map-body').hidden = true;
@@ -3052,8 +3350,9 @@ function detailPeople(list) {
   return people;
 }
 
-function pinEl() {
-  const svg = svgEl('svg', 'next-stop-pin');
+// cls: 'next-stop-pin' (sized by CSS) or 'map-pin-icon' (sized by attributes on the map).
+function pinEl(cls = 'next-stop-pin') {
+  const svg = svgEl('svg', cls);
   svg.setAttribute('viewBox', '0 0 24 24');
   svg.setAttribute('aria-hidden', 'true');
   svg.setAttribute('focusable', 'false');

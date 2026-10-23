@@ -13,6 +13,7 @@ hash is checked before parsing, and no string from it reaches the output.
 """
 
 import hashlib
+import heapq
 import json
 import math
 import os
@@ -33,10 +34,13 @@ MERGE = {"Somaliland": "SO", "Northern Cyprus": "CY", "Siachen Glacier": "IN"}
 
 TOLERANCE = 0.2  # Douglas-Peucker, in canvas units
 DOT_SIZE = 6  # a country whose drawn rings are all smaller than this both ways gets a dot
-TOP_KEYS = {"attribution", "width", "height", "countries", "dots", "other"}
+TOP_KEYS = {"attribution", "width", "height", "countries", "dots", "other", "anchors"}
+PRECISION = 0.05  # pole of inaccessibility: stop when no cell can beat the best by more than this
+MAX_CELLS = 100_000  # cells evaluated per country before the search gives up
 PATH_RE = re.compile(r"[MLZ0-9.,\-]+")
 _PAIR = r"-?[0-9]+\.[0-9],-?[0-9]+\.[0-9]"
 PATH_SHAPE_RE = re.compile(rf"(?:M{_PAIR}(?:L{_PAIR})*Z)+")
+RING_RE = re.compile(r"M([^Z]*)Z")
 NUMBER_PAIR_RE = re.compile(r"(-?[0-9]+\.[0-9]),(-?[0-9]+\.[0-9])")
 
 # Equal Earth (Savric, Patterson & Jenny 2018), spherical form.
@@ -281,6 +285,105 @@ def project(rings):
     return [[to_canvas(lon, lat) for lon, lat in ring] for ring in rings]
 
 
+# --- Pin anchors (contract 11c) ---
+
+def path_rings(path):
+    """The rings of a drawn path string, as lists of (x, y) floats."""
+    return [[(float(x), float(y)) for x, y in NUMBER_PAIR_RE.findall(ring)] for ring in RING_RE.findall(path)]
+
+
+def _in_ring(ring, x, y):
+    inside = False
+    for (x1, y1), (x2, y2) in zip(ring, ring[1:] + ring[:1]):
+        if (y1 > y) != (y2 > y) and x < x1 + (y - y1) * (x2 - x1) / (y2 - y1):
+            inside = not inside
+    return inside
+
+
+def inside_evenodd(rings, x, y):
+    """Filled under fill-rule: evenodd over all the rings (what the frontend draws)."""
+    return sum(_in_ring(ring, x, y) for ring in rings) % 2 == 1
+
+
+def signed_distance(rings, x, y):
+    """Distance to the nearest edge of any ring; positive inside, negative outside."""
+    d = min(_segment_distance((x, y), a, b) for ring in rings for a, b in zip(ring, ring[1:] + ring[:1]))
+    return d if inside_evenodd(rings, x, y) else -d
+
+
+def pole_of_inaccessibility(rings, max_cells=None):
+    """The point of the largest ring farthest inside the country, by quadtree cell search.
+
+    Returns ((x, y), cells evaluated). Written from the description of Mapbox's polylabel.
+    """
+    max_cells = MAX_CELLS if max_cells is None else max_cells
+    chosen = max(rings, key=lambda r: abs(signed_area(r)))  # max() keeps the first of equals
+    xs, ys = [x for x, _ in chosen], [y for _, y in chosen]
+    min_x, min_y, max_x, max_y = min(xs), min(ys), max(xs), max(ys)
+    size = min(max_x - min_x, max_y - min_y)
+    if not size > 0:
+        raise MapError("anchor: a country's largest ring has a zero-size box")
+    heap, seq, cells = [], 0, 0
+
+    def evaluate(x, y, half):
+        nonlocal seq, cells
+        cells += 1
+        if cells > max_cells:
+            raise MapError(f"anchor: more than {max_cells} cells")
+        d = signed_distance(rings, x, y)
+        seq += 1
+        return (-(d + half * math.sqrt(2)), seq, x, y, half, d)
+
+    cx, cy = centroid(chosen)
+    if not inside_evenodd(rings, cx, cy):
+        cx, cy = (min_x + max_x) / 2, (min_y + max_y) / 2
+    best = evaluate(cx, cy, 0)
+    half = size / 2
+    x = min_x
+    while x < max_x:
+        y = min_y
+        while y < max_y:
+            heapq.heappush(heap, evaluate(x + half, y + half, half))
+            y += size
+        x += size
+    while heap:
+        cell = heapq.heappop(heap)
+        _, _, x, y, half, d = cell
+        if d > best[5]:
+            best = cell
+        if -cell[0] - best[5] <= PRECISION:
+            break  # the heap is ordered by potential, so no later cell can do better
+        half /= 2
+        for dx, dy in ((-1, -1), (1, -1), (-1, 1), (1, 1)):
+            heapq.heappush(heap, evaluate(x + dx * half, y + dy * half, half))
+    return (best[2], best[3]), cells
+
+
+NEIGHBOURS = ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (1, -1), (-1, 1), (1, 1))
+
+
+def anchor_for(rings, max_cells=None):
+    """([x, y] rounded to one decimal and inside the country, cells evaluated)."""
+    (x, y), cells = pole_of_inaccessibility(rings, max_cells)
+    rx, ry = float(fmt(x)), float(fmt(y))
+    for dx, dy in ((0, 0), *NEIGHBOURS):
+        px, py = float(fmt(rx + dx / 10)), float(fmt(ry + dy / 10))
+        if inside_evenodd(rings, px, py):
+            return [px, py], cells
+    raise MapError("anchor: no rounded point inside the country")
+
+
+def anchors_for(countries_out, dots_out):
+    """{code: [x, y]} from the cropped paths; dot countries anchor on their moved dot."""
+    anchors = {}
+    for code in sorted(countries_out):
+        if code in dots_out:
+            anchors[code] = list(dots_out[code])
+        else:
+            anchors[code] = anchor_for(path_rings(countries_out[code]))[0]
+    return anchors
+
+
 # --- Building and writing ---
 
 def tenths(text):
@@ -320,7 +423,8 @@ def build_with_offset(data, expected_sha256=SOURCE_SHA256, merge=None):
     other_rings = [kept for kept in (kept_rings(project(rings)) for rings in others) if kept]
     countries_out, others_out, dots_out, height, offset = crop(drawn, other_rings, dots)
     result = {"attribution": ATTRIBUTION, "width": WIDTH, "height": height,
-              "countries": countries_out, "dots": dots_out, "other": others_out}
+              "countries": countries_out, "dots": dots_out, "other": others_out,
+              "anchors": anchors_for(countries_out, dots_out)}
     return result, offset
 
 
@@ -358,7 +462,32 @@ def check(result):
         ys.append(point[1])
     if min(ys) != MARGIN / 10 or max(ys) != float(fmt(height - MARGIN / 10)):
         raise MapError("check: the map isn't cropped to a 2-unit margin")
+    _check_anchors(result, height)
     return result
+
+
+def _one_decimal(value):
+    return isinstance(value, float) and math.isfinite(value) and float(fmt(value)) == value
+
+
+def _check_anchors(result, height):
+    anchors = result["anchors"]
+    if not isinstance(anchors, dict) or set(anchors) != set(result["countries"]):
+        raise MapError("check: anchors must be exactly the 197 codes")
+    rings = {code: path_rings(path) for code, path in result["countries"].items()}
+    for code, point in anchors.items():
+        if not (isinstance(point, list) and len(point) == 2 and all(_one_decimal(v) for v in point)):
+            raise MapError(f"check: the anchor of {code} isn't two numbers with one decimal")
+        _check_point(*point, height)
+        if code in result["dots"]:
+            if point != result["dots"][code]:
+                raise MapError(f"check: the anchor of {code} isn't on its dot")
+            continue
+        if not inside_evenodd(rings[code], *point):
+            raise MapError(f"check: the anchor of {code} isn't inside it")
+        for other, other_rings in rings.items():
+            if other != code and inside_evenodd(other_rings, *point):
+                raise MapError(f"check: the anchor of {code} is inside {other}")
 
 
 def _check_point(x, y, height):

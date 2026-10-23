@@ -1,4 +1,4 @@
-"""Feature 6: the world map data.
+"""Feature 6: the world map data (11c: pin anchors).
 
 MapFileTests check the generated app/static/map.json; MapServeTests check how it's served;
 the Build* tests run tools/build_map.py on a tiny synthetic GeoJSON.
@@ -25,7 +25,7 @@ SCRIPT = ROOT / "tools" / "build_map.py"
 PATH_RE = re.compile(r"[MLZ0-9.,\-]+")
 PATH_SHAPE_RE = re.compile(r"(?:M-?\d+\.\d,-?\d+\.\d(?:L-?\d+\.\d,-?\d+\.\d)*Z)+")
 PAIR_RE = re.compile(r"(-?\d+\.\d),(-?\d+\.\d)")
-TOP_KEYS = {"attribution", "width", "height", "countries", "dots", "other"}
+TOP_KEYS = {"attribution", "width", "height", "countries", "dots", "other", "anchors"}
 # What the crop added to every Y of the pinned source (build_map.py prints it); see test_crop_offset.
 MAP_Y_OFFSET = -0.3
 
@@ -175,6 +175,38 @@ class MapFileTests(unittest.TestCase):
                     point = on_map(lon, lat)
                     self.assertTrue(point_in_path(self.map["countries"][code], point))
                     self.assertFalse(any(point_in_path(p, point) for p in self.map["other"]))
+
+    def test_anchors(self):
+        """Contract 11c: one anchor per country, on its dot or inside its own path and no other."""
+        anchors = self.map["anchors"]
+        self.assertIsInstance(anchors, dict)
+        self.assertEqual(set(anchors), set(countries.BY_CODE))
+        for code, point in anchors.items():
+            with self.subTest(code=code):
+                self.assertIsInstance(point, list)
+                self.assertEqual(len(point), 2)
+                for v in point:
+                    self.assertIs(type(v), float)
+                    self.assertEqual(float(f"{v:.1f}"), v)
+                self.assertInCanvas(*point)
+                if code in self.map["dots"]:
+                    self.assertEqual(point, self.map["dots"][code])
+                    continue
+                self.assertTrue(point_in_path(self.map["countries"][code], point))
+                others = [c for c, path in self.map["countries"].items()
+                          if c != code and point_in_path(path, point)]
+                self.assertEqual(others, [])
+
+    def test_anchor_spot_checks(self):
+        anchors, paths = self.map["anchors"], self.map["countries"]
+        self.assertTrue(point_in_path(paths["HR"], anchors["HR"]))
+        self.assertFalse(point_in_path(paths["BA"], anchors["HR"]))
+        self.assertTrue(point_in_path(paths["LS"], anchors["LS"]))
+        self.assertFalse(point_in_path(paths["ZA"], anchors["LS"]))
+        self.assertFalse(point_in_path(paths["LS"], anchors["ZA"]))
+        for code in ("NO", "CL", "ID", "US", "RU"):
+            with self.subTest(code=code):
+                self.assertTrue(point_in_path(paths[code], anchors[code]))
 
     def test_canonical_encoding(self):
         """Sorted keys, fixed separators, ASCII, one trailing newline: what the script writes."""
@@ -474,6 +506,117 @@ class BuildTests(BuildTestCase):
         self.assertFalse(point_in_path(path, self.at(lon + 2, lat + 2)))  # the hole stays unfilled
 
 
+def grid_corner(code):
+    """The south-west corner of a country's square in base_features()."""
+    i = sorted(countries.BY_CODE).index(code)
+    return -170 + (i % 20) * 17, -70 + (i // 20) * 14
+
+
+class AnchorTests(BuildTestCase):
+    def test_square_anchor_at_centre(self):
+        point, cells = build_map.anchor_for([[(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)]])
+        self.assertAlmostEqual(point[0], 15, delta=0.1)
+        self.assertAlmostEqual(point[1], 15, delta=0.1)
+        self.assertGreater(cells, 0)
+
+    def test_square_with_hole(self):
+        outer = [(0.0, 0.0), (30.0, 0.0), (30.0, 30.0), (0.0, 30.0)]
+        hole = [(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)]
+        point, _ = build_map.anchor_for([outer, hole])
+        self.assertFalse(point_in_ring(hole, point))
+        self.assertTrue(point_in_ring(outer, point))
+        self.assertTrue(build_map.inside_evenodd([outer, hole], *point))
+
+    def test_u_shape_with_centre_outside(self):
+        u = [(0.0, 0.0), (30.0, 0.0), (30.0, 30.0), (20.0, 30.0), (20.0, 5.0), (10.0, 5.0), (10.0, 30.0),
+             (0.0, 30.0)]
+        self.assertFalse(point_in_ring(u, build_map.centroid(u)))
+        self.assertFalse(point_in_ring(u, (15.0, 15.0)))  # the box centre
+        point, _ = build_map.anchor_for([u])
+        self.assertTrue(point_in_ring(u, point))
+
+    def test_l_shape(self):
+        ell = [(0.0, 0.0), (40.0, 0.0), (40.0, 6.0), (6.0, 6.0), (6.0, 40.0), (0.0, 40.0)]
+        point, _ = build_map.anchor_for([ell])
+        self.assertTrue(point_in_ring(ell, point))
+
+    def test_largest_ring_chosen(self):
+        small = [(0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]
+        big = [(50.0, 50.0), (70.0, 50.0), (70.0, 70.0), (50.0, 70.0)]
+        point, _ = build_map.anchor_for([small, big])
+        self.assertAlmostEqual(point[0], 60, delta=0.1)
+        self.assertAlmostEqual(point[1], 60, delta=0.1)
+
+    def test_degenerate_ring_fails(self):
+        flat = [(0.0, 5.0), (10.0, 5.0), (20.0, 5.0)]
+        self.assertRaisesRegex(build_map.MapError, "zero-size", build_map.anchor_for, [flat])
+
+    def test_degenerate_country_fails_the_build(self):
+        features = base_features()
+        lon, lat = grid_corner("PE")
+        i = sorted(countries.BY_CODE).index("PE")
+        features[i] = feature("PE", [[lon, lat], [lon + 5, lat], [lon + 10, lat], [lon, lat]])
+        self.assertRaisesRegex(build_map.MapError, "zero-size", self.build, features)
+
+    def test_cell_cap(self):
+        ring = [(0.0, 0.0), (100.0, 0.0), (100.0, 100.0), (0.0, 100.0)]
+        self.assertRaisesRegex(build_map.MapError, "more than 5 cells", build_map.anchor_for, [ring], 5)
+        self.assertEqual(build_map.MAX_CELLS, 100_000)
+        with mock.patch.object(build_map, "MAX_CELLS", 5):
+            self.assertRaisesRegex(build_map.MapError, "cells", self.build)
+
+    def test_neighbour_fallback(self):
+        """A rounded pole outside the shape moves to the first neighbour inside, in the fixed order."""
+        def box(x, y, r=0.04):
+            return [(x - r, y - r), (x + r, y - r), (x + r, y + r), (x - r, y + r)]
+        cases = [([box(4.9, 5.0), box(5.1, 5.0)], [4.9, 5.0]),  # x- before x+
+                 ([box(5.1, 5.0), box(5.0, 4.9)], [5.1, 5.0]),  # x+ before y-
+                 ([box(5.0, 4.9), box(5.0, 5.1)], [5.0, 4.9]),  # y- before y+
+                 ([box(5.0, 5.1), box(4.9, 4.9)], [5.0, 5.1]),  # y+ before the diagonals
+                 ([box(4.9, 4.9), box(5.1, 4.9)], [4.9, 4.9]),  # x-y- first diagonal
+                 ([box(5.1, 4.9), box(4.9, 5.1)], [5.1, 4.9]),
+                 ([box(4.9, 5.1), box(5.1, 5.1)], [4.9, 5.1]),
+                 ([box(5.1, 5.1)], [5.1, 5.1])]
+        for rings, expected in cases:
+            with self.subTest(expected=expected):
+                with mock.patch.object(build_map, "pole_of_inaccessibility", return_value=((5.02, 4.98), 1)):
+                    self.assertEqual(build_map.anchor_for(rings)[0], expected)
+        with mock.patch.object(build_map, "pole_of_inaccessibility", return_value=((5.02, 4.98), 1)):
+            self.assertEqual(build_map.anchor_for([box(5.0, 5.0)])[0], [5.0, 5.0])  # rounded point first
+            self.assertRaisesRegex(build_map.MapError, "no rounded point", build_map.anchor_for, [box(9.0, 9.0)])
+
+    def test_build_anchors(self):
+        result = self.build()
+        self.assertEqual(set(result["anchors"]), set(countries.BY_CODE))
+        lon, lat = grid_corner("PE")
+        x, y = result["anchors"]["PE"]
+        (x1, y1), (x2, y2) = self.at(lon + 1, lat + 3), self.at(lon + 3, lat + 1)
+        self.assertTrue(x1 < x < x2 and y1 < y < y2, (x, y))  # the middle of the (projected) square
+        self.assertTrue(point_in_path(result["countries"]["PE"], [x, y]))
+        build_map.check(result)
+
+    def test_build_anchor_avoids_hole(self):
+        features = base_features()
+        i = sorted(countries.BY_CODE).index("BR")
+        lon, lat = grid_corner("BR")
+        features[i]["geometry"]["coordinates"].append(square(lon + 1, lat + 1, 2))
+        result = self.build(features)
+        path, point = result["countries"]["BR"], result["anchors"]["BR"]
+        self.assertTrue(point_in_path(path, point))
+        self.assertFalse(point_in_ring(rings_of(path)[1], point))
+
+    def test_dot_anchor_is_the_moved_dot(self):
+        result = self.build()
+        self.assertNotEqual(self.offset, 0)  # so an unmoved dot would differ
+        for code in TINY:
+            self.assertEqual(result["anchors"][code], result["dots"][code])
+            lon, lat = grid_corner(code)
+            self.assertAlmostEqual(result["anchors"][code][1], self.at(lon + 0.25, lat + 0.25)[1], delta=0.1)
+
+    def test_anchors_deterministic(self):
+        self.assertEqual(build_map.render(self.build()), build_map.render(self.build()))
+
+
 class MergeTests(BuildTestCase):
     def test_merged_into_country(self):
         merged = self.build()
@@ -623,6 +766,51 @@ class CheckAndWriteTests(BuildTestCase):
                 bad = copy.deepcopy(good)
                 change(bad)
                 self.assertRaises(build_map.MapError, build_map.check, bad)
+
+    def test_check_rejects_bad_anchors(self):
+        """Contract 11c: each anchor mutation is rejected by the check that targets it."""
+        good = self.build()
+        pe = good["anchors"]["PE"]
+        format_error = "the anchor of PE isn't two numbers with one decimal"
+        changes = [
+            (lambda m: m.pop("anchors"), "wrong top-level keys"),
+            (lambda m: m["anchors"].pop("PE"), "anchors must be exactly the 197 codes"),
+            (lambda m: m["anchors"].__setitem__("ZZ", [1.0, 1.0]), "anchors must be exactly the 197 codes"),
+            (lambda m: m.__setitem__("anchors", list(m["anchors"].items())), "anchors must be exactly the 197"),
+            (lambda m: m["anchors"].__setitem__("PE", [int(pe[0]), pe[1]]), format_error),
+            (lambda m: m["anchors"].__setitem__("PE", [True, pe[1]]), format_error),
+            (lambda m: m["anchors"].__setitem__("PE", [pe[0] + 0.01, pe[1]]), format_error),
+            (lambda m: m["anchors"].__setitem__("PE", pe + [1.0]), format_error),
+            (lambda m: m["anchors"].__setitem__("PE", [float("nan"), 1.0]), format_error),
+            (lambda m: m["anchors"].__setitem__("PE", (pe[0], pe[1])), format_error),
+            (lambda m: m["anchors"].__setitem__("PE", [1.0, 2000.0]), "a coordinate is outside the canvas"),
+            (lambda m: m["anchors"].__setitem__("PE", [3.0, 3.0]), "the anchor of PE isn't inside it"),  # sea
+            (lambda m: m["anchors"].__setitem__("PE", list(m["anchors"]["BR"])), "the anchor of PE isn't inside it"),
+            (lambda m: m["anchors"].__setitem__("AD", [m["dots"]["AD"][0] + 0.1, m["dots"]["AD"][1]]),
+             "the anchor of AD isn't on its dot"),
+        ]
+        build_map.check(copy.deepcopy(good))
+        for i, (change, message) in enumerate(changes):
+            with self.subTest(i=i, message=message):
+                bad = copy.deepcopy(good)
+                change(bad)
+                with self.assertRaises(build_map.MapError) as ctx:
+                    build_map.check(bad)
+                self.assertIn(message, str(ctx.exception))
+
+    def test_check_rejects_anchor_inside_another_country(self):
+        """Only the other-country branch can reject this: PE's anchor is inside PE, but UY overlaps it."""
+        features = base_features()
+        lon, lat = grid_corner("PE")
+        i = sorted(countries.BY_CODE).index("UY")
+        features[i] = feature("UY", square(lon + 1, lat + 1, 2))  # over the middle of PE
+        result = self.build(features)
+        anchor = result["anchors"]["PE"]
+        self.assertTrue(point_in_path(result["countries"]["PE"], anchor))
+        self.assertTrue(point_in_path(result["countries"]["UY"], anchor))
+        with self.assertRaises(build_map.MapError) as ctx:
+            build_map.check(result)
+        self.assertIn("the anchor of PE is inside UY", str(ctx.exception))
 
     def test_write_map(self):
         with tempfile.TemporaryDirectory() as tmp:
