@@ -132,8 +132,9 @@
         </div>
         <p class="muted" id="browse-empty" hidden data-i18n="browse.empty">No countries match.</p>
         <ul class="country-list" id="country-list" aria-labelledby="countries-title"></ul>
-        <!-- Map view. app.js fills the SVG once per page load (paths and dots only)
-             and colours it with classes; the card shows the tapped country. -->
+        <!-- Map view. app.js fills the SVG once per page load (paths and dots, plus
+             the Next stops pins layer) and colours it with classes; the card shows
+             the tapped country. -->
         <div class="map-section" id="map-section" hidden>
           <p class="muted map-status" id="map-status" role="status"></p>
           <button type="button" class="btn map-retry" id="map-retry" hidden data-i18n="common.try_again">Try again</button>
@@ -144,6 +145,7 @@
                 <div class="map-card-text">
                   <p class="map-card-name"><span class="flag" id="map-card-flag" aria-hidden="true"></span> <span id="map-card-name"></span></p>
                   <p class="map-card-status" id="map-card-status"></p>
+                  <p class="map-card-line" id="map-card-line" hidden></p>
                 </div>
                 <button type="button" class="btn btn-primary" id="map-card-open" data-i18n="map.card_open">Open</button>
                 <div class="next-stop-buttons map-card-next" id="map-card-next" hidden></div>
@@ -154,13 +156,17 @@
               <button type="button" class="btn" id="map-zoom-out" aria-label="Zoom out" data-i18n-aria-label="map.zoom_out">&minus;</button>
               <button type="button" class="btn" id="map-reset" aria-label="Reset map" data-i18n-aria-label="map.reset_label" data-i18n="map.reset">Reset</button>
             </div>
-            <ul class="map-legend" id="map-legend">
-              <li><span class="legend-swatch status-none" aria-hidden="true"></span><span id="legend-none">Not started</span></li>
-              <li id="legend-your-turn"><span class="legend-swatch status-your-turn" aria-hidden="true"></span><span data-i18n="status.your_turn">Your turn</span></li>
-              <li id="legend-waiting"><span class="legend-swatch status-waiting" aria-hidden="true"></span><span data-i18n="status.waiting">Waiting on others</span></li>
-              <li id="legend-some"><span class="legend-swatch status-some" aria-hidden="true"></span><span data-i18n="status.some">Some</span></li>
-              <li><span class="legend-swatch status-complete" aria-hidden="true"></span><span id="legend-complete">Fully complete</span></li>
-            </ul>
+            <div class="map-legend-row">
+              <ul class="map-legend" id="map-legend">
+                <li><span class="legend-swatch status-none" aria-hidden="true"></span><span id="legend-none">Not started</span></li>
+                <li id="legend-your-turn"><span class="legend-swatch status-your-turn" aria-hidden="true"></span><span data-i18n="status.your_turn">Your turn</span></li>
+                <li id="legend-waiting"><span class="legend-swatch status-waiting" aria-hidden="true"></span><span data-i18n="status.waiting">Waiting on others</span></li>
+                <li id="legend-some"><span class="legend-swatch status-some" aria-hidden="true"></span><span data-i18n="status.some">Some</span></li>
+                <li><span class="legend-swatch status-complete" aria-hidden="true"></span><span id="legend-complete">Fully complete</span></li>
+                <li id="legend-pins"><svg class="legend-pin" viewBox="0 0 14 22" aria-hidden="true" focusable="false"><line x1="7" y1="12" x2="7" y2="21"/><circle cx="7" cy="7" r="6"/></svg><span data-i18n="map.pins_legend">Pins: next stops</span></li>
+              </ul>
+              <button type="button" class="btn map-pins-toggle" id="map-pins-toggle" aria-pressed="true" data-i18n="map.pins_toggle">Pins</button>
+            </div>
           </div>
         </div>
       </section>
