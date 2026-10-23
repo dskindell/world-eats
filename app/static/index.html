@@ -257,10 +257,17 @@
         <form class="stack" id="avatar-form" method="post" novalidate>
           <div class="avatar-intro">
             <span class="avatar-holder" id="account-avatar"></span>
-            <p class="muted" data-i18n="account.avatar_text">Your avatar is generated for you. Pick a new pattern if you don't like this one.</p>
+            <!-- app.js sets this text: it depends on whether you have a photo. -->
+            <p class="muted" id="avatar-text"></p>
           </div>
+          <!-- Opened by the Upload photo button; not a field of its own. -->
+          <input type="file" class="visually-hidden" id="photo-file" accept="image/*" tabindex="-1" aria-hidden="true">
           <p class="form-error" role="alert" hidden></p>
-          <button type="submit" class="btn" data-i18n="account.avatar_new">New pattern</button>
+          <div class="avatar-buttons">
+            <button type="button" class="btn" id="photo-upload" data-i18n="account.photo_upload">Upload photo</button>
+            <button type="button" class="btn" id="photo-remove" data-i18n="account.photo_remove" hidden>Remove photo</button>
+            <button type="submit" class="btn" data-i18n="account.avatar_new">New pattern</button>
+          </div>
         </form>
       </section>
 
@@ -363,6 +370,7 @@
           <button type="button" class="btn" id="au-enable" data-i18n="admin.enable">Enable</button>
           <button type="button" class="btn" id="au-promote" data-i18n="admin.promote">Make admin</button>
           <button type="button" class="btn" id="au-demote" data-i18n="admin.demote">Remove admin</button>
+          <button type="button" class="btn" id="au-photo-remove" data-i18n="admin.photo_remove">Remove photo</button>
         </div>
       </section>
 
@@ -467,7 +475,7 @@
     </form>
   </dialog>
 
-  <!-- Shared by Disable, Enable, Make admin and Remove admin; app.js fills the text. -->
+  <!-- Shared by Disable, Enable, Make admin, Remove admin and Remove photo; app.js fills the text. -->
   <dialog class="dialog" id="confirm-dialog" aria-labelledby="confirm-title">
     <form class="stack" id="confirm-form" method="post" novalidate>
       <h2 id="confirm-title"></h2>
@@ -476,6 +484,23 @@
       <div class="actions">
         <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
         <button type="submit" class="btn btn-primary" id="confirm-submit"></button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="dialog" id="crop-dialog" aria-labelledby="crop-title">
+    <form class="stack" id="crop-form" method="post" novalidate>
+      <h2 id="crop-title" data-i18n="crop.title">Crop your photo</h2>
+      <!-- app.js draws the picked photo and the circle here (no <img>, no inline styles). -->
+      <canvas class="crop-canvas" id="crop-canvas" width="280" height="280" tabindex="0" role="group" aria-label="Photo position. Drag, or use the arrow keys, to move it." data-i18n-aria-label="crop.area_label"></canvas>
+      <div class="field">
+        <label for="crop-zoom" data-i18n="crop.zoom">Zoom</label>
+        <input id="crop-zoom" name="zoom" type="range" min="1" max="4" step="0.01" value="1">
+      </div>
+      <p class="form-error" role="alert" hidden></p>
+      <div class="actions">
+        <button type="button" class="btn" data-close data-i18n="common.cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" data-i18n="common.save">Save</button>
       </div>
     </form>
   </dialog>

@@ -175,6 +175,17 @@ MIGRATIONS = [
         )""",
         "CREATE INDEX IF NOT EXISTS shared_next_stops_added_by ON shared_next_stops(added_by)",
     ]),
+    # Change 11d: profile photos. photo_token is NULL exactly when the user has no
+    # user_photos row; both change in one transaction. Unique indexes allow many NULLs.
+    (8, [
+        add_column("users", "photo_token", "TEXT"),
+        "CREATE UNIQUE INDEX IF NOT EXISTS users_photo_token ON users(photo_token)",
+        """CREATE TABLE IF NOT EXISTS user_photos (
+            user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+            jpeg BLOB NOT NULL,
+            updated_at INTEGER NOT NULL
+        )""",
+    ]),
 ]
 
 

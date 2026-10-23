@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest import mock
 
 from tests.helpers import PASSWORD, ServerTestCase, auth, passports, server
+from tests.jpeg import CHROME_PHOTO
 from tests.test_passports import PassportTestCase, ref
 
 import errors  # noqa: E402  (app/ is on sys.path via tests.helpers)
@@ -535,6 +536,26 @@ class CodeTests(ErrorAssertions, PassportTestCase):
         self.log_meal(pid)
         self.log_meal(pid, token=bob_token)
         self.assert_code(self.next_stop(pid, {"list": "ours", "on": True}), 409, "next_stop_complete")
+
+    # Profile photos
+
+    def photo_upload(self, data=CHROME_PHOTO, content_type="image/jpeg"):
+        return self.request("POST", "/api/account/photo", raw_body=data, token=self.token, content_type=content_type)
+
+    def test_content_type_jpeg(self):
+        self.assert_code(self.photo_upload(content_type="text/plain"), 415, "content_type_jpeg")
+
+    def test_invalid_image(self):
+        self.assert_code(self.photo_upload(b"\xff\xd8 not a jpeg"), 400, "invalid_image")
+        self.assert_code(self.photo_upload(b""), 400, "invalid_image")
+
+    def test_photo_not_found(self):
+        self.assert_code(self.api("GET", "/api/photos/" + "A" * 43), 404, "photo_not_found")
+
+    def test_too_many_uploads(self):
+        for _ in range(server.UPLOAD_LIMIT):
+            self.assertEqual(self.photo_upload().status, 200)
+        self.assert_code(self.photo_upload(), 429, "too_many_uploads")
 
 
 # --- The new static file (contract 10 §2) ---

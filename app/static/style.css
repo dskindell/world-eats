@@ -47,6 +47,10 @@
   --avatar-bg: #eef0f3;
   --avatar-rim: #5b6573;
   --avatar-placeholder: #6b7480;
+  /* Photo crop dialog: the shade outside the circle and the circle's ring
+     (canvas colours, read by app.js). */
+  --crop-shade: rgb(0 0 0 / 0.6);
+  --crop-ring: #e9ecf0;
   /* Next stops map pins: needle, ground shadow, the shared list's head
      (the accent), the dark rim round every head, and the "+N" head. */
   --pin-needle: #d7dce3;
@@ -1365,6 +1369,12 @@ h1:focus {
   fill: var(--avatar-placeholder);
 }
 
+/* An uploaded photo over the pattern, clipped to the avatar's circle (its
+   box is the full 36 x 36 viewBox, so 50% is radius 18 at the centre). */
+.avatar-photo {
+  clip-path: circle(50% at 50% 50%);
+}
+
 /* Inline before a name in running text. */
 .list-card-title > .avatar,
 .list-card-sub > .avatar,
@@ -1400,6 +1410,39 @@ h1:focus {
 
 .avatar-intro p {
   margin: 0;
+}
+
+.avatar-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* The crop area: a square up to 280 px, narrower on small phones. app.js
+   sizes its pixel buffer to match. touch-action: none so dragging moves the
+   photo instead of scrolling the page. */
+.crop-canvas {
+  display: block;
+  width: min(280px, 100%);
+  height: auto;
+  aspect-ratio: 1 / 1;
+  margin: 0 auto;
+  border-radius: var(--radius);
+  background: var(--bg);
+  touch-action: none;
+  cursor: grab;
+}
+
+.crop-canvas:active {
+  cursor: grabbing;
+}
+
+/* The zoom slider: a full-width range, without the text-field box. */
+.field input[type="range"] {
+  padding: 0;
+  background: none;
+  border: 0;
+  accent-color: var(--accent);
 }
 
 .avatar-select {

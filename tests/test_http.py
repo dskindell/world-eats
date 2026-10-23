@@ -228,7 +228,7 @@ class BodyTests(ServerTestCase):
         self.assertEqual(resp.status, 201)
         self.assertEqual(resp.json()["user"], {"id": 1, "username": "admin", "display_name": "Admin",
                                                "is_admin": True, "must_change_password": False,
-                                               "avatar_seed": self.seed_of(1)})
+                                               "avatar_seed": self.seed_of(1), "photo": None})
 
     def test_get_with_body(self):
         for value in ("5", "abc", "00", "-0"):
@@ -615,7 +615,8 @@ class RouteOptionTests(ServerTestCase):
         self.assertEqual(public, {"/api/session", "/api/setup", "/api/login", "/api/logout"})
         no_renew = {pattern.pattern for pattern, methods in server.ROUTES
                     for route in methods.values() if not route.renew}
-        self.assertEqual(no_renew, {"/api/setup", "/api/login", "/api/logout"})
+        # Change 11d: image loads don't renew (no session writes).
+        self.assertEqual(no_renew, {"/api/setup", "/api/login", "/api/logout", "/api/photos/([A-Za-z0-9_-]{43})"})
 
     def test_protected_endpoints_without_login(self):
         for method, path in (("PATCH", "/api/account"), ("POST", "/api/account/password"),
@@ -637,4 +638,4 @@ class RouteOptionTests(ServerTestCase):
         self.assertEqual(self.request("GET", "/api/whoami", token=token).status, 200)
         self.assertNotIn("password_hash", seen["keys"])
         self.assertEqual(seen["keys"], ["avatar_seed", "display_name", "id", "is_admin", "last_used_at",
-                                        "must_change_password", "session_id", "username"])
+                                        "must_change_password", "photo_token", "session_id", "username"])

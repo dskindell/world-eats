@@ -25,10 +25,10 @@ class NextStopTestCase(ErrorAssertions, MealTestCase):
         return body
 
     def person(self, user_id, inactive=False):
-        username, display_name, seed = self.query(
-            "SELECT username, display_name, avatar_seed FROM users WHERE id = ?", (user_id,))[0]
+        username, display_name, seed, photo = self.query(
+            "SELECT username, display_name, avatar_seed, photo_token FROM users WHERE id = ?", (user_id,))[0]
         return {"id": user_id, "username": username, "display_name": display_name, "inactive": inactive,
-                "avatar_seed": seed}
+                "avatar_seed": seed, "photo": photo}
 
     def own_rows(self, pid=None):
         if pid is None:
