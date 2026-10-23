@@ -9,7 +9,7 @@ NOT_FOUND = {"error": "Passport not found", "code": "passport_not_found"}
 OWNER_ONLY = "Only the owner can do that"
 PENDING = {"error": "You must change your password first", "code": "password_change_required",
            "password_change_required": True}
-PERSON_KEYS = {"id", "username", "display_name", "inactive", "avatar_seed"}
+PERSON_KEYS = {"id", "username", "display_name", "inactive", "avatar_seed", "photo"}
 SUMMARY_KEYS = {"id", "name", "is_personal", "role", "is_default", "owner"}
 DETAIL_PASSPORT_KEYS = SUMMARY_KEYS | {"created_at"}
 TEMP = "temporary password 1"
@@ -149,9 +149,14 @@ class PassportTestCase(ServerTestCase):
                            "WHERE m.role != 'participant'"), [], "next stop of a viewer")
         self.assertEqual(q("SELECT s.id FROM shared_next_stops s JOIN passports p ON p.id = s.passport_id "
                            "WHERE p.is_personal = 1"), [], "shared next stop on a personal passport")
+        # Change 11d: a photo token exactly when a photo row exists.
+        self.assertEqual(q("SELECT id FROM users WHERE (photo_token IS NULL) = "
+                           "EXISTS (SELECT 1 FROM user_photos WHERE user_photos.user_id = users.id)"),
+                         [], "photo token without a photo, or a photo without a token")
         for user_id in self.deleted_ids:
             if q("SELECT 1 FROM users WHERE id = ?", (user_id,)):
                 continue  # the id was reused by a new account (IdReuseTests checks that one itself)
+            self.assertEqual(q("SELECT user_id FROM user_photos WHERE user_id = ?", (user_id,)), [])
             self.assertEqual(q("SELECT id FROM passports WHERE owner_id = ?", (user_id,)), [])
             self.assertEqual(q("SELECT id FROM passport_members WHERE user_id = ?", (user_id,)), [])
             self.assertEqual(q("SELECT id FROM sessions WHERE user_id = ?", (user_id,)), [])
@@ -433,7 +438,7 @@ class UsersListTests(PassportTestCase):
             self.assertEqual(set(user), PERSON_KEYS)
             self.assertFalse(user["inactive"])
         self.assertEqual(users[0], {"id": anna, "username": "anna", "display_name": "Anna", "inactive": False,
-                                    "avatar_seed": self.seed_of(anna)})
+                                    "avatar_seed": self.seed_of(anna), "photo": None})
         # the caller is left out; the admin shows up for other users
         names = [u["username"] for u in self.api("GET", "/api/users", token=zed_token).json()["users"]]
         self.assertEqual(names, ["admin", "anna", "bob"])
@@ -483,17 +488,17 @@ class CreateTests(PassportTestCase):
             "id": pid, "name": "Date nights", "is_personal": False, "role": "owner", "is_default": False,
             "created_at": self.base_time,
             "owner": {"id": 1, "username": "admin", "display_name": "Admin", "inactive": False,
-                      "avatar_seed": self.seed_of(1)}})
+                      "avatar_seed": self.seed_of(1), "photo": None}})
         self.assertEqual(body["participants"], [
             {"id": 1, "username": "admin", "display_name": "Admin", "inactive": False, "is_owner": True,
-             "avatar_seed": self.seed_of(1)},
+             "avatar_seed": self.seed_of(1), "photo": None},
             {"id": sam, "username": "sam", "display_name": "Sam S", "inactive": False, "is_owner": False,
-             "avatar_seed": self.seed_of(sam)},
+             "avatar_seed": self.seed_of(sam), "photo": None},
             {"id": bob, "username": "bob", "display_name": "Bob B", "inactive": False, "is_owner": False,
-             "avatar_seed": self.seed_of(bob)}])
+             "avatar_seed": self.seed_of(bob), "photo": None}])
         self.assertEqual(body["viewers"], [
             {"id": ann, "username": "ann", "display_name": "Ann A", "inactive": False,
-             "avatar_seed": self.seed_of(ann)}])
+             "avatar_seed": self.seed_of(ann), "photo": None}])
         self.assertEqual(self.members(pid), [(1, "participant"), (sam, "participant"), (bob, "participant"),
                                              (ann, "viewer")])
         # it shows up for the others immediately
@@ -914,7 +919,7 @@ class DefaultPassportTests(PassportTestCase):
         self.assertEqual((first["is_personal"], first["is_default"]), (True, True))
         self.assertEqual(listing["passports"][-1]["owner"],
                          {"id": self.bob, "username": "bob", "display_name": "bob", "inactive": False,
-                          "avatar_seed": self.seed_of(self.bob)})
+                          "avatar_seed": self.seed_of(self.bob), "photo": None})
 
     def test_viewed_personal_passport_sorts_by_name(self):
         bob_personal = self.personal_id(self.bob)
@@ -1025,10 +1030,10 @@ class DeleteCascadeTests(PassportTestCase):
             "handed_over": [
                 {"id": p["active"], "name": "Active",
                  "new_owner": {"id": self.sam, "username": "sam", "display_name": "sam", "inactive": False,
-                               "avatar_seed": self.seed_of(self.sam)}},
+                               "avatar_seed": self.seed_of(self.sam), "photo": None}},
                 {"id": p["disabled"], "name": "Disabled only",
                  "new_owner": {"id": self.dan, "username": "dan", "display_name": "dan", "inactive": True,
-                               "avatar_seed": self.seed_of(self.dan)}}],
+                               "avatar_seed": self.seed_of(self.dan), "photo": None}}],
             "deleted": [{"id": p["alone"], "name": "Alone"}, {"id": p["viewers"], "name": "Viewers only"}],
             "left": 2})
         self.self_delete(self.bob, self.bob_token)

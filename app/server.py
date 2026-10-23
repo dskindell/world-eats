@@ -3,7 +3,8 @@
 Stdlib only (http.server + sqlite3). Feature 1a: first-visit setup, login,
 sessions and account settings; feature 1b: admin screen; feature 2: passports;
 feature 3: countries and meals; feature 4: search; feature 6: the world map data;
-change 11a: generated avatar seeds; change 11b: next stops lists.
+change 11a: generated avatar seeds; change 11b: next stops lists; change 11d:
+profile photos.
 
 Patterns for later features:
 - ROUTES is an ordered list of (compiled regex, {method: Route(handler, ...options)}),
@@ -50,6 +51,12 @@ Patterns for later features:
 - Search (contract 4 §4) is a read sent as POST: validate the query without the
   database, take a search slot (503 when busy), then `with req.read():`,
   member_passport(), and the queries under a time budget (503 when it runs out).
+- Request bodies (contract 11d §5): a write route reads JSON unless its Route has
+  body="jpeg", which reads the raw image bytes into req.raw_body (req.body is {}).
+  Both readers share _read_body(): Origin, media type, Content-Length, then read.
+- Non-JSON responses (contract 11d §9.2): a handler may return a RawBody instead
+  of (status, payload); route() sends it with send_body(csp=, extra_headers=),
+  never with a Set-Cookie. Errors before that are still JSON ApiErrors.
 """
 
 import hashlib
@@ -77,6 +84,7 @@ import db
 import errors
 import meals
 import passports
+import photos
 import search
 from config import ConfigError, load_config, normalise_ip, split_host_port
 
@@ -118,6 +126,17 @@ TEMP_PASSWORD_TTL = 604800  # 7 days
 SEARCH_SLOTS = 4  # searches running at once
 SEARCH_WAIT = 1  # seconds to wait for a search slot
 SEARCH_BUDGET = 5  # seconds of query time per search
+# Change 11d: profile photos.
+PHOTO_LENGTH_RE = re.compile(r"[0-9]{1,6}")  # the photo reader's own; CONTENT_LENGTH_RE stays
+MAX_PHOTO = photos.MAX_BYTES  # 131,072 bytes
+UPLOAD_SLOTS = 2  # uploads parsed at once
+UPLOAD_WAIT = 1  # seconds to wait for an upload slot
+UPLOAD_LIMIT = 10  # attempts per user per window
+UPLOAD_WINDOW = 3600
+PHOTO_TOKEN = "([A-Za-z0-9_-]{43})"  # secrets.token_urlsafe(32)
+PHOTO_CSP = "default-src 'none'; frame-ancestors 'none'; sandbox"
+PHOTO_CACHE = "private, max-age=31536000, immutable"
+PHOTO_HEADERS = (("Cross-Origin-Resource-Policy", "same-origin"),)
 
 # Generic error codes for errors from the stdlib's parse_request() (its own messages
 # can echo the request) and for our own send_error() calls; anything else is bad_request.
@@ -150,12 +169,31 @@ class Route(NamedTuple):
     renew: bool = True  # renew the session's expiry when it's used
     admin: bool = False  # 403 unless the user is an admin
     allow_pending: bool = False  # works while the user must change their password
+    body: str = "json"  # write routes: "json" (an object) or "jpeg" (raw bytes in req.raw_body)
+
+
+class RawBody(NamedTuple):
+    """A non-JSON 200 response. csp replaces the global CSP; extra_headers are server constants."""
+    body: bytes
+    content_type: str
+    cache_control: str
+    csp: str
+    extra_headers: tuple = ()
 
 
 def user_json(row):
     return {"id": row["id"], "username": row["username"],
             "display_name": row["display_name"], "is_admin": bool(row["is_admin"]),
-            "must_change_password": bool(row["must_change_password"]), "avatar_seed": row["avatar_seed"]}
+            "must_change_password": bool(row["must_change_password"]), "avatar_seed": row["avatar_seed"],
+            "photo": row["photo_token"]}
+
+
+def fresh_user_json(req, conn):
+    """Inside a write transaction: the caller's user object with the values as stored now (11d §9.6)."""
+    fresh = conn.execute("SELECT display_name, avatar_seed, photo_token FROM users WHERE id = ?",
+                         (req.user["id"],)).fetchone()
+    return {**user_json(req.user), "display_name": fresh["display_name"], "avatar_seed": fresh["avatar_seed"],
+            "photo": fresh["photo_token"]}
 
 
 def temp_password_expired(row, now):
@@ -232,7 +270,8 @@ def api_setup(req):
     req.issue_session(token)
     req.app.log(f"Setup completed by {username}")
     return 201, {"user": user_json({"id": user_id, "username": username, "display_name": display_name,
-                                    "is_admin": 1, "must_change_password": 0, "avatar_seed": avatar_seed})}
+                                    "is_admin": 1, "must_change_password": 0, "avatar_seed": avatar_seed,
+                                    "photo_token": None})}
 
 
 def api_login(req):
@@ -252,7 +291,7 @@ def api_login(req):
         if user_key is not None:
             user = conn.execute(
                 "SELECT id, username, display_name, is_admin, must_change_password, disabled, "
-                "temp_password_set_at, password_hash, avatar_seed FROM users WHERE username = ?",
+                "temp_password_set_at, password_hash, avatar_seed, photo_token FROM users WHERE username = ?",
                 (username,)).fetchone()
         if user is not None and auth.usable_password(password):
             ok = req.app.hasher.verify(password, user["password_hash"])
@@ -310,10 +349,8 @@ def api_update_account(req):
             conn.execute("UPDATE users SET display_name = ? WHERE id = ?", (display_name, user_id))
         effective = passports.effective_default(conn, user_id)
         # As stored now, not req.user's copy from before the transaction.
-        fresh = conn.execute("SELECT display_name, avatar_seed FROM users WHERE id = ?", (user_id,)).fetchone()
-    return 200, {"user": {**user_json(req.user), "display_name": fresh["display_name"],
-                          "avatar_seed": fresh["avatar_seed"]},
-                 "default_passport_id": effective}
+        user = fresh_user_json(req, conn)
+    return 200, {"user": user, "default_passport_id": effective}
 
 
 def api_new_avatar(req):
@@ -323,7 +360,68 @@ def api_new_avatar(req):
         conn = req.db()
         require_live_session(req, conn)
         conn.execute("UPDATE users SET avatar_seed = ? WHERE id = ?", (avatar_seed, req.user["id"]))
-    return 200, {"user": {**user_json(req.user), "avatar_seed": avatar_seed}}
+        user = fresh_user_json(req, conn)
+    return 200, {"user": user}
+
+
+# --- Profile photos (contract 11d §3) ---
+
+def set_photo(conn, user_id, jpeg, token, now):
+    """Inside the write transaction: the row and the token change together."""
+    conn.execute("INSERT INTO user_photos (user_id, jpeg, updated_at) VALUES (?, ?, ?) "
+                 "ON CONFLICT(user_id) DO UPDATE SET jpeg = excluded.jpeg, updated_at = excluded.updated_at",
+                 (user_id, jpeg, now))
+    conn.execute("UPDATE users SET photo_token = ? WHERE id = ?", (token, user_id))
+
+
+def remove_photo(conn, user_id):
+    """Inside the write transaction; nothing to remove is fine."""
+    conn.execute("DELETE FROM user_photos WHERE user_id = ?", (user_id,))
+    conn.execute("UPDATE users SET photo_token = NULL WHERE id = ?", (user_id,))
+
+
+def api_upload_photo(req):
+    """Contract 11d §3 and §6-3: slot, attempt counter, parse + rebuild, then the write."""
+    app = req.app
+    user_id = req.user["id"]
+    if not app.upload_slots.acquire(timeout=app.upload_wait):
+        raise ApiError(503, "busy")
+    try:
+        # Every request that got a slot counts, whatever the parse says (§6-5).
+        if not app.upload_limiter.try_record(user_id):
+            raise ApiError(429, "too_many_uploads")
+        try:
+            jpeg = photos.rebuild(req.raw_body)
+        except photos.InvalidImage:
+            raise ApiError(400, "invalid_image") from None
+    finally:
+        app.upload_slots.release()  # before the write lock, never held across it
+    token = secrets.token_urlsafe(32)
+    with req.write():
+        conn = req.db()
+        require_live_session(req, conn)
+        set_photo(conn, user_id, jpeg, token, app.now())
+        user = fresh_user_json(req, conn)
+    return 200, {"user": user}
+
+
+def api_remove_photo(req):
+    with req.write():
+        conn = req.db()
+        require_live_session(req, conn)
+        remove_photo(conn, req.user["id"])
+        user = fresh_user_json(req, conn)
+    return 200, {"user": user}
+
+
+def api_photo(req, token):
+    """GET/HEAD: the stored (rebuilt) JPEG. A token no user holds now is a 404."""
+    row = req.db().execute(
+        "SELECT user_photos.jpeg FROM users JOIN user_photos ON user_photos.user_id = users.id "
+        "WHERE users.photo_token = ?", (token,)).fetchone()
+    if row is None:
+        raise ApiError(404, "photo_not_found")
+    return RawBody(bytes(row["jpeg"]), "image/jpeg", PHOTO_CACHE, PHOTO_CSP, PHOTO_HEADERS)
 
 
 def check_own_password(req, password, wrong_code):
@@ -397,6 +495,9 @@ def api_delete_account(req):
         if row is not None and is_last_usable_admin(conn, row):
             raise ApiError(409, "only_admin_delete")
         delete_user(conn, user_id)
+    # A new account may reuse the id. An upload in flight now can still leave a few
+    # stamps under it for up to an hour (accepted, contract 11d §6-6).
+    req.app.upload_limiter.clear(user_id)
     req.clear_session_cookie()
     return 200, {"ok": True}
 
@@ -420,7 +521,7 @@ def delete_user(conn, user_id):
 
 # Named columns for the admin user object (never SELECT *); fixed strings, no input.
 ADMIN_USER_SELECT = ("SELECT id, username, display_name, is_admin, disabled, must_change_password, "
-                     "temp_password_set_at, created_at, last_active_at, avatar_seed FROM users")
+                     "temp_password_set_at, created_at, last_active_at, avatar_seed, photo_token FROM users")
 FIND_USER_SQL = ADMIN_USER_SELECT + " WHERE id = ?"
 LIST_USERS_SQL = ADMIN_USER_SELECT + " ORDER BY username COLLATE NOCASE"
 
@@ -443,7 +544,7 @@ def admin_user_json(req, row):
             "must_change_password": bool(row["must_change_password"]),
             "temp_password_expired": temp_password_expired(row, req.app.now()),
             "created_at": row["created_at"], "last_active_at": row["last_active_at"],
-            "avatar_seed": row["avatar_seed"]}
+            "avatar_seed": row["avatar_seed"], "photo": row["photo_token"]}
 
 
 def log_admin_action(req, message):
@@ -579,6 +680,19 @@ def api_admin_demote(req, user_id):
     return 200, {"user": admin_user_json(req, row)}
 
 
+def api_admin_remove_photo(req, user_id):
+    """Contract 11d §9.5: same order as api_admin_disable; the log names only the username."""
+    user_id = int(user_id)
+    conn = req.db()
+    with req.write():
+        require_admin(req, conn)
+        require_user(conn, user_id)
+        remove_photo(conn, user_id)
+        row = find_user(conn, user_id)
+    log_admin_action(req, f"Photo removed for {log_safe(row['username'])}")
+    return 200, {"user": admin_user_json(req, row)}
+
+
 def api_admin_unlock(req, user_id):
     conn = req.db()
     row = require_user(conn, int(user_id))
@@ -604,6 +718,7 @@ def api_admin_delete(req, user_id):
             raise ApiError(409, "last_admin_delete")
         delete_user(conn, user_id)
     req.app.lockout.clear_user(row["username"].lower())
+    req.app.upload_limiter.clear(user_id)  # the id may be reused (contract 11d §6-6)
     log_admin_action(req, f"User {log_safe(row['username'])} deleted")
     return 200, {"ok": True}
 
@@ -1011,6 +1126,10 @@ ROUTES = [(re.compile(pattern), methods) for pattern, methods in [
     (literal("/api/account/logout-everywhere"), {"POST": Route(api_logout_everywhere, allow_pending=True)}),
     (literal("/api/account/delete"), {"POST": Route(api_delete_account)}),
     (literal("/api/account/avatar"), {"POST": Route(api_new_avatar)}),
+    (literal("/api/account/photo"), {"POST": Route(api_upload_photo, body="jpeg")}),
+    (literal("/api/account/photo/delete"), {"POST": Route(api_remove_photo)}),
+    # Image loads mustn't write: no session renewal.
+    (literal("/api/photos/") + PHOTO_TOKEN, {"GET": Route(api_photo, renew=False)}),
     (literal("/api/account/delete-preview"), {"GET": Route(api_delete_preview)}),
     (literal("/api/users"), {"GET": Route(api_users)}),
     (literal("/api/passports"), {"GET": Route(api_passports), "POST": Route(api_create_passport)}),
@@ -1037,6 +1156,7 @@ ROUTES = [(re.compile(pattern), methods) for pattern, methods in [
     (ADMIN_USER + literal("/demote"), {"POST": admin_route(api_admin_demote)}),
     (ADMIN_USER + literal("/unlock"), {"POST": admin_route(api_admin_unlock)}),
     (ADMIN_USER + literal("/delete"), {"POST": admin_route(api_admin_delete)}),
+    (ADMIN_USER + literal("/photo/delete"), {"POST": admin_route(api_admin_remove_photo)}),
 ]]
 
 
@@ -1113,6 +1233,8 @@ class Handler(BaseHTTPRequestHandler):
         path = self._log_path()
         if path == "/health":
             return
+        if path.startswith("/api/photos/"):
+            path = "/api/photos/*"  # photo tokens are never logged
         method = self.command or "-"
         self.app.log(f"{log_safe(method, 20)} {log_safe(path)} {int(code)}")
 
@@ -1237,7 +1359,11 @@ class Handler(BaseHTTPRequestHandler):
         elif writes:
             raise ApiError(405, "method_not_allowed")
 
-        if writes:
+        self.raw_body = None
+        if writes and route.body == "jpeg":
+            self.raw_body = self.read_jpeg_body(host)
+            self.body = {}
+        elif writes:
             self.body = self.read_json_body(host)
         else:
             length = self.headers.get("Content-Length")
@@ -1256,7 +1382,14 @@ class Handler(BaseHTTPRequestHandler):
                 raise ApiError(403, "password_change_required", extra={"password_change_required": True})
             if route.admin and not self.user["is_admin"]:
                 raise ApiError(403, "admins_only")
-        status, payload = route.handler(self, *args)
+        result = route.handler(self, *args)
+        if isinstance(result, RawBody):
+            if self.cookie_out is not None:
+                raise RuntimeError("a raw response must not set a cookie")
+            self.send_body(200, result.body, result.content_type, result.cache_control,
+                           csp=result.csp, extra_headers=result.extra_headers)
+            return
+        status, payload = result
         self.send_json(status, payload)
 
     def find_route(self, path, method):
@@ -1271,24 +1404,35 @@ class Handler(BaseHTTPRequestHandler):
             return route, match.groups()
         raise ApiError(404, "not_found")
 
-    def read_json_body(self, host):
+    def _read_body(self, host, media, media_code, length_re, limit):
+        """Origin 403 -> media type 415 -> Content-Length 411/400/413 -> the bytes (contract 11d §5-2)."""
         origin = self.headers.get("Origin")
         if origin is None or origin.lower() not in ("http://" + host.lower(), "https://" + host.lower()):
             raise ApiError(403, "cross_origin")
         media_type = self.headers.get("Content-Type", "").split(";", 1)[0].strip().lower()
-        if media_type != "application/json":
-            raise ApiError(415, "content_type_json")
+        if media_type != media:
+            raise ApiError(415, media_code)
         length = self.headers.get("Content-Length")
         if length is None:
             raise ApiError(411, "length_required")
-        if not CONTENT_LENGTH_RE.fullmatch(length):
+        if not length_re.fullmatch(length):
             raise ApiError(400, "invalid_content_length")
         length = int(length)
-        if length > MAX_BODY:
+        if length > limit:
             raise ApiError(413, "too_large")
         data = self.read_exactly(length)
         if not self.app.reaper.finish_reading(self.request):
             raise _CloseConnection()
+        return data
+
+    def read_jpeg_body(self, host):
+        data = self._read_body(host, "image/jpeg", "content_type_jpeg", PHOTO_LENGTH_RE, MAX_PHOTO)
+        if not data:
+            raise ApiError(400, "invalid_image")
+        return data
+
+    def read_json_body(self, host):
+        data = self._read_body(host, "application/json", "content_type_json", CONTENT_LENGTH_RE, MAX_BODY)
         if not data:
             return {}
         try:
@@ -1338,8 +1482,8 @@ class Handler(BaseHTTPRequestHandler):
             now = self.app.now()
             row = self.db().execute(
                 "SELECT sessions.id AS session_id, sessions.last_used_at, users.id, users.username, "
-                "users.display_name, users.is_admin, users.must_change_password, users.avatar_seed "
-                "FROM sessions JOIN users ON users.id = sessions.user_id "
+                "users.display_name, users.is_admin, users.must_change_password, users.avatar_seed, "
+                "users.photo_token FROM sessions JOIN users ON users.id = sessions.user_id "
                 "WHERE sessions.token_hash = ? AND sessions.expires_at > ? AND users.disabled = 0",
                 (token_hash(token), now)).fetchone()
         if row is None:
@@ -1412,9 +1556,15 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self.send_body(status, body, "application/json; charset=utf-8", "no-store")
 
-    def send_body(self, status, body, content_type, cache_control):
+    def send_body(self, status, body, content_type, cache_control, csp=None, extra_headers=()):
+        """`csp` replaces the global Content-Security-Policy value (still one header);
+        `extra_headers` are fixed (name, value) pairs from server constants."""
         self.send_response(status)
         for name, value in SECURITY_HEADERS:
+            if name == "Content-Security-Policy" and csp is not None:
+                value = csp
+            self.send_header(name, value)
+        for name, value in extra_headers:
             self.send_header(name, value)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -1497,7 +1647,9 @@ class App(ThreadingHTTPServer):
 
     def __init__(self, config, address=None, static_dir=STATIC_DIR, hasher=None, clock=time.time,
                  log_stream=None, max_connections=64, request_deadline=20.0, body_deadline=BODY_DEADLINE,
-                 search_slots=SEARCH_SLOTS, search_wait=SEARCH_WAIT, search_budget=SEARCH_BUDGET):
+                 search_slots=SEARCH_SLOTS, search_wait=SEARCH_WAIT, search_budget=SEARCH_BUDGET,
+                 upload_slots=UPLOAD_SLOTS, upload_wait=UPLOAD_WAIT, upload_limit=UPLOAD_LIMIT,
+                 upload_window=UPLOAD_WINDOW):
         self.config = config
         self.db_path = os.path.join(config.data_dir, db.DB_NAME)
         self.static_dir = Path(static_dir)
@@ -1514,6 +1666,10 @@ class App(ThreadingHTTPServer):
         self.search_slots = threading.BoundedSemaphore(search_slots)
         self.search_wait = search_wait
         self.search_budget = search_budget
+        # Change 11d: its own semaphore, separate from search. 0 slots (a test seam) is always busy.
+        self.upload_slots = threading.BoundedSemaphore(upload_slots)
+        self.upload_wait = upload_wait
+        self.upload_limiter = auth.UploadLimiter(lambda: self.clock(), limit=upload_limit, window=upload_window)
         self.xff_warned = False
 
         db.init_schema(self.db_path)

@@ -199,9 +199,29 @@ function avatarPattern(seed) {
   return Number.isInteger(hue) && hue >= 0 && hue < 360 ? { v, hue } : null;
 }
 
+// An uploaded photo's token (contract 11d §2): the only server value that
+// goes into an avatar attribute, and only after this check.
+const PHOTO_TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
+const validPhoto = (photo) => typeof photo === 'string' && PHOTO_TOKEN_RE.test(photo);
+
+// The photo over the pattern, clipped to the circle by its CSS class. If it
+// can't load (removed, replaced, logged out), it's dropped and the pattern shows.
+function avatarPhotoEl(photo) {
+  const image = document.createElementNS(SVG_NS, 'image');
+  image.setAttribute('class', 'avatar-photo');
+  for (const name of ['x', 'y']) image.setAttribute(name, '0');
+  for (const name of ['width', 'height']) image.setAttribute(name, '36');
+  image.setAttribute('preserveAspectRatio', 'xMidYMid slice'); // i18n-ok SVG attribute value
+  image.addEventListener('error', () => image.remove());
+  // Fixed same-origin path plus a token that passed PHOTO_TOKEN_RE (checked by hand: the lint doesn't see setAttribute).
+  image.setAttribute('href', `/api/photos/${photo}`);
+  return image;
+}
+
 // Decorative: the name next to it is the accessible name. The seed itself
-// never enters the DOM, only the derived cells and hue.
-function avatarEl(seed, sizeClass) {
+// never enters the DOM, only the derived cells and hue. The pattern is always
+// drawn, so it shows whenever the photo is missing or fails.
+function avatarEl(seed, sizeClass, photo) {
   const size = AVATAR_SIZES.includes(sizeClass) ? sizeClass : AVATAR_SIZES[0];
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('class', `avatar ${size}`);
@@ -215,7 +235,12 @@ function avatarEl(seed, sizeClass) {
   disc.setAttribute('cy', '18');
   disc.setAttribute('r', '18');
   svg.append(disc);
-  if (!pattern) return svg;
+  if (pattern) appendAvatarCells(svg, pattern);
+  if (validPhoto(photo)) svg.append(avatarPhotoEl(photo));
+  return svg;
+}
+
+function appendAvatarCells(svg, pattern) {
   const fill = `hsl(${pattern.hue}, 65%, 45%)`;
   for (let row = 0; row < 5; row += 1) {
     for (let col = 0; col < 5; col += 1) {
@@ -231,7 +256,6 @@ function avatarEl(seed, sizeClass) {
       svg.append(rect);
     }
   }
-  return svg;
 }
 
 // Pairs each fixed <span class="avatar-slot"> just rendered by innerHTML with
@@ -243,7 +267,7 @@ function fillAvatarSlots(container, people, sizeClass) {
   if (!aligned) console.error('avatar slots and people differ in number'); // i18n-ok developer message
   slots.forEach((slot, i) => {
     const person = aligned ? people[i] : null;
-    slot.replaceWith(avatarEl(person ? person.avatar_seed : null, sizeClass));
+    slot.replaceWith(avatarEl(person ? person.avatar_seed : null, sizeClass, person ? person.photo : null));
   });
 }
 
@@ -258,9 +282,14 @@ class ApiError extends Error {
 
 // ---- API ----
 
+// A Blob body is sent raw as image/jpeg (the photo upload, contract 11d §5-9);
+// anything else is sent as JSON.
 async function api(method, path, body) {
   const opts = { method, credentials: 'same-origin', headers: { Accept: 'application/json' } };
-  if (method === 'POST' || method === 'PATCH') {
+  if (body instanceof Blob) {
+    opts.headers['Content-Type'] = 'image/jpeg';
+    opts.body = body;
+  } else if (method === 'POST' || method === 'PATCH') {
     opts.headers['Content-Type'] = 'application/json';
     opts.body = JSON.stringify(body ?? {});
   }
@@ -530,10 +559,13 @@ function closeDialogs() {
 
 function updateUserText() {
   $('menu-name').textContent = state.user.display_name;
-  $('menu-avatar').replaceChildren(avatarEl(state.user.avatar_seed, 'avatar-md'));
-  $('account-avatar').replaceChildren(avatarEl(state.user.avatar_seed, 'avatar-lg'));
+  $('menu-avatar').replaceChildren(avatarEl(state.user.avatar_seed, 'avatar-md', state.user.photo));
+  $('account-avatar').replaceChildren(avatarEl(state.user.avatar_seed, 'avatar-lg', state.user.photo));
   $('account-username').textContent = state.user.username;
   $('menu-admin').hidden = !state.user.is_admin;
+  const hasPhoto = validPhoto(state.user.photo);
+  $('avatar-text').textContent = hasPhoto ? t('account.avatar_text_photo') : t('account.avatar_text');
+  $('photo-remove').hidden = !hasPhoto;
 }
 
 function fillAccount() {
@@ -737,6 +769,320 @@ bindForm($('avatar-form'), async () => {
   state.user = user;
   updateUserText();
   toast(t('toast.avatar_saved'));
+});
+
+// ---- Account settings: profile photo (contract 11d §7, §9.1) ----
+
+const PHOTO_FILE_MAX = 25 * 1024 * 1024;
+const PHOTO_PIXELS_MAX = 50_000_000;
+const PHOTO_SIZE = 256;
+const PHOTO_BYTES_MAX = 131_072;
+const PHOTO_QUALITIES = [0.85, 0.75, 0.65, 0.55];
+// Image data, not theme: transparent pixels become white in the JPEG (and in
+// the preview, so it matches) whatever the theme.
+const PHOTO_MATTE = '#ffffff';
+const CROP_KEY_STEP = 10;
+// The working copy's shorter side: 4x the output at the slider's maximum zoom (4).
+const CROP_WORK_SIDE = 1024;
+
+// The picked photo: the working bitmap, the zoom (1 = shorter side fills the
+// square) and the crop square's centre, in the bitmap's pixels; plus the
+// canvas colours (read once per opening) and the canvas's device-pixel factor.
+const crop = {
+  bitmap: null, zoom: 1, cx: 0, cy: 0, drag: null, frame: 0, uploading: false, shade: '', ring: '', dpr: 1,
+};
+const cropDialog = setupDialog('crop-dialog');
+const cropCancel = cropDialog.querySelector('[data-close]');
+
+$('photo-remove').addEventListener('click', async (event) => {
+  const button = event.currentTarget;
+  if (button.disabled) return;
+  button.disabled = true;
+  setError($('avatar-form'), '');
+  try {
+    const { user } = await api('POST', '/api/account/photo/delete', {});
+    state.user = user;
+    updateUserText();
+    // The button just hid itself (it was blurred while disabled), so keep keyboard users in the section.
+    if (button.hidden && currentView === 'account') $('photo-upload').focus();
+    toast(t('toast.photo_removed'));
+  } catch (err) {
+    setError($('avatar-form'), err.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+$('photo-upload').addEventListener('click', () => {
+  setError($('avatar-form'), '');
+  $('photo-file').click();
+});
+
+$('photo-file').addEventListener('change', async (event) => {
+  const input = event.currentTarget;
+  const file = input.files && input.files[0];
+  input.value = ''; // so picking the same file again still fires change
+  if (!file) return;
+  const button = $('photo-upload');
+  button.disabled = true;
+  const token = routeToken;
+  try {
+    const bitmap = await decodePhoto(file);
+    // The user left Account settings while it decoded: don't pop a dialog elsewhere.
+    if (token !== routeToken || currentView !== 'account') bitmap.close();
+    else openCrop(bitmap);
+  } catch (err) {
+    if (token === routeToken) setError($('avatar-form'), err.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
+// Browsers that don't know the options object throw a TypeError; retry without it.
+async function decodeFile(file) {
+  try {
+    return await createImageBitmap(file, { imageOrientation: 'from-image' });
+  } catch (err) {
+    if (!(err instanceof TypeError)) throw err;
+    return createImageBitmap(file);
+  }
+}
+
+// A copy whose shorter side is at most CROP_WORK_SIDE (never enlarged), so
+// dragging a 48 MP photo stays smooth. Falls back to the original if the
+// browser can't resize.
+async function workingBitmap(bitmap) {
+  const scale = CROP_WORK_SIDE / Math.min(bitmap.width, bitmap.height);
+  if (scale >= 1) return bitmap;
+  try {
+    const small = await createImageBitmap(bitmap, {
+      resizeWidth: Math.max(1, Math.round(bitmap.width * scale)),
+      resizeHeight: Math.max(1, Math.round(bitmap.height * scale)),
+      resizeQuality: 'high',
+    });
+    bitmap.close();
+    return small;
+  } catch {
+    return bitmap;
+  }
+}
+
+// createImageBitmap needs no object URL and no CSP change (§9.1). Sizes are
+// checked before decoding (bytes) and after (pixels).
+async function decodePhoto(file) {
+  if (file.size > PHOTO_FILE_MAX) fail(t('client.photo_file_too_big'));
+  if (typeof createImageBitmap !== 'function') fail(t('client.photo_unreadable'));
+  let bitmap;
+  try {
+    bitmap = await decodeFile(file);
+  } catch {
+    fail(t('client.photo_unreadable'));
+  }
+  if (!(bitmap.width > 0 && bitmap.height > 0)) {
+    bitmap.close();
+    fail(t('client.photo_unreadable'));
+  }
+  if (bitmap.width * bitmap.height > PHOTO_PIXELS_MAX) {
+    bitmap.close();
+    fail(t('client.photo_file_too_big'));
+  }
+  return workingBitmap(bitmap);
+}
+
+function openCrop(bitmap) {
+  dropCropBitmap();
+  crop.bitmap = bitmap;
+  crop.zoom = 1;
+  crop.cx = bitmap.width / 2;
+  crop.cy = bitmap.height / 2;
+  crop.shade = cssToken('--crop-shade');
+  crop.ring = cssToken('--crop-ring');
+  $('crop-zoom').value = '1';
+  cropDialog.showModal();
+  sizeCropCanvas();
+  $('crop-canvas').focus();
+}
+
+function dropCropBitmap() {
+  if (crop.bitmap) crop.bitmap.close();
+  crop.bitmap = null;
+  crop.drag = null;
+  cancelAnimationFrame(crop.frame);
+  crop.frame = 0;
+}
+
+cropDialog.addEventListener('close', dropCropBitmap);
+
+// Once the photo is on its way it can't be called back (the server may already
+// have it), so Escape waits for the answer, like the disabled Cancel button.
+cropDialog.addEventListener('cancel', (event) => {
+  if (crop.uploading) event.preventDefault();
+});
+
+// Side of the crop square in bitmap pixels.
+const cropSide = () => Math.min(crop.bitmap.width, crop.bitmap.height) / crop.zoom;
+
+// Keeps the square inside the photo, so there are never empty edges.
+function clampCrop() {
+  const half = cropSide() / 2;
+  crop.cx = Math.min(Math.max(crop.cx, half), crop.bitmap.width - half);
+  crop.cy = Math.min(Math.max(crop.cy, half), crop.bitmap.height - half);
+}
+
+// The same drawing for the preview and the upload, so they match exactly.
+function drawCropSquare(ctx, size) {
+  const side = cropSide();
+  ctx.fillStyle = PHOTO_MATTE;
+  ctx.fillRect(0, 0, size, size);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(crop.bitmap, crop.cx - side / 2, crop.cy - side / 2, side, side, 0, 0, size, size);
+}
+
+const cssToken = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+
+function drawCrop() {
+  if (!crop.bitmap) return;
+  const canvas = $('crop-canvas');
+  const ctx = canvas.getContext('2d');
+  const size = canvas.width;
+  clampCrop();
+  drawCropSquare(ctx, size);
+  // Darken outside the circle: the square with the circle cut out.
+  ctx.beginPath();
+  ctx.rect(0, 0, size, size);
+  ctx.arc(size / 2, size / 2, size / 2, 0, 2 * Math.PI);
+  ctx.fillStyle = crop.shade;
+  ctx.fill('evenodd');
+  // A 2 CSS px ring just inside the edge, whatever the screen density.
+  ctx.beginPath();
+  ctx.arc(size / 2, size / 2, size / 2 - crop.dpr, 0, 2 * Math.PI);
+  ctx.lineWidth = 2 * crop.dpr;
+  ctx.strokeStyle = crop.ring;
+  ctx.stroke();
+}
+
+// Drags, keys and the slider can fire many times a frame; draw once per frame.
+function scheduleCropDraw() {
+  clampCrop();
+  if (crop.frame) return;
+  crop.frame = requestAnimationFrame(() => {
+    crop.frame = 0;
+    drawCrop();
+  });
+}
+
+// The canvas is sized by CSS; its pixel buffer follows its shown size and the screen's density.
+function sizeCropCanvas() {
+  const canvas = $('crop-canvas');
+  const shown = canvas.getBoundingClientRect().width;
+  const px = Math.max(1, Math.round(shown * (window.devicePixelRatio || 1)));
+  if (canvas.width !== px) {
+    canvas.width = px;
+    canvas.height = px;
+  }
+  crop.dpr = shown > 0 ? px / shown : 1;
+  drawCrop();
+}
+
+window.addEventListener('resize', () => {
+  if (cropDialog.open) sizeCropCanvas();
+});
+
+// Moves the photo by (dx, dy) screen pixels: the photo follows the finger.
+function moveCrop(dx, dy) {
+  if (!crop.bitmap) return;
+  const shown = $('crop-canvas').getBoundingClientRect().width;
+  if (!(shown > 0)) return;
+  const scale = cropSide() / shown;
+  crop.cx -= dx * scale;
+  crop.cy -= dy * scale;
+  scheduleCropDraw();
+}
+
+$('crop-canvas').addEventListener('pointerdown', (event) => {
+  if (!crop.bitmap || crop.drag) return;
+  event.preventDefault();
+  // preventDefault stops the click focusing it; focus it so the arrow keys work next.
+  event.currentTarget.focus();
+  event.currentTarget.setPointerCapture(event.pointerId);
+  crop.drag = { id: event.pointerId, x: event.clientX, y: event.clientY };
+});
+
+$('crop-canvas').addEventListener('pointermove', (event) => {
+  const drag = crop.drag;
+  if (!drag || drag.id !== event.pointerId) return;
+  moveCrop(event.clientX - drag.x, event.clientY - drag.y);
+  drag.x = event.clientX;
+  drag.y = event.clientY;
+});
+
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+  $('crop-canvas').addEventListener(type, (event) => {
+    if (crop.drag && crop.drag.id === event.pointerId) crop.drag = null;
+  });
+}
+
+const CROP_KEYS = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+
+$('crop-canvas').addEventListener('keydown', (event) => {
+  if (!Object.hasOwn(CROP_KEYS, event.key)) return;
+  event.preventDefault();
+  const [x, y] = CROP_KEYS[event.key];
+  // The arrow moves the photo the way it points.
+  moveCrop(x * CROP_KEY_STEP, y * CROP_KEY_STEP);
+});
+
+$('crop-zoom').addEventListener('input', (event) => {
+  if (!crop.bitmap) return;
+  const slider = event.currentTarget;
+  const zoom = Number(slider.value);
+  // The slider's max attribute (index.html) is the one source of the zoom range.
+  crop.zoom = Number.isFinite(zoom) ? Math.min(Math.max(zoom, 1), Number(slider.max) || 1) : 1;
+  scheduleCropDraw();
+});
+
+const toJpeg = (canvas, quality) => new Promise((resolve) => {
+  canvas.toBlob(resolve, 'image/jpeg', quality);
+});
+
+// 256 x 256 JPEG on a default (sRGB) 2D canvas, stepping the quality down
+// until it fits the server's limit.
+async function encodePhoto() {
+  const canvas = document.createElement('canvas');
+  canvas.width = PHOTO_SIZE;
+  canvas.height = PHOTO_SIZE;
+  clampCrop();
+  drawCropSquare(canvas.getContext('2d'), PHOTO_SIZE);
+  for (const quality of PHOTO_QUALITIES) {
+    const blob = await toJpeg(canvas, quality);
+    if (!blob || blob.size === 0 || blob.type !== 'image/jpeg') fail(t('client.photo_no_jpeg'));
+    if (blob.size <= PHOTO_BYTES_MAX) return blob;
+  }
+  return fail(t('client.photo_too_detailed'));
+}
+
+bindForm($('crop-form'), async () => {
+  if (!crop.bitmap) return;
+  const blob = await encodePhoto();
+  // Cancelled (or navigated away) while encoding: send nothing.
+  if (!cropDialog.open) return;
+  crop.uploading = true;
+  cropCancel.disabled = true;
+  let user;
+  try {
+    ({ user } = await api('POST', '/api/account/photo', blob));
+  } finally {
+    crop.uploading = false;
+    cropCancel.disabled = false;
+  }
+  // The server has the photo either way, so the page shows it; the toast only
+  // if the dialog wasn't closed by navigation meanwhile.
+  state.user = user;
+  updateUserText();
+  if (!cropDialog.open) return;
+  cropDialog.close();
+  toast(t('toast.photo_saved'));
 });
 
 bindForm($('password-form'), async (form) => {
@@ -2104,7 +2450,7 @@ function pinEntries() {
 }
 
 // Identifies what the pins show, so they're rebuilt only when it changes (in memory only).
-const headKey = (h) => (h.person ? `${h.person.id}/${h.person.avatar_seed}` : 'shared');
+const headKey = (h) => (h.person ? `${h.person.id}/${h.person.avatar_seed}/${h.person.photo}` : 'shared');
 const pinsKey = (entries) => `${browse.id}|${entries.map((e) => `${e.code}:${e.heads.map(headKey).join(',')}`).join(';')}`;
 
 function setNumbers(el, attrs) {
@@ -2122,7 +2468,7 @@ function pinHead(head, hx) {
   const box = [['x', hx - PIN_HEAD_R], ['y', PIN_HEAD_Y - PIN_HEAD_R], ['width', 2 * PIN_HEAD_R], ['height', 2 * PIN_HEAD_R]];
   const parts = [];
   if (head.person) {
-    const avatar = avatarEl(head.person.avatar_seed, 'avatar-pin');
+    const avatar = avatarEl(head.person.avatar_seed, 'avatar-pin', head.person.photo);
     setNumbers(avatar, box);
     parts.push(avatar);
   } else if (head.shared) {
@@ -3236,7 +3582,7 @@ function mealCard(m) {
   li.append(head);
   if (m.user) {
     const author = textEl('p', personLabel(m.user), 'muted meal-author'); // i18n-ok CSS class names
-    author.prepend(avatarEl(m.user.avatar_seed, 'avatar-sm'));
+    author.prepend(avatarEl(m.user.avatar_seed, 'avatar-sm', m.user.photo));
     li.append(author);
   }
   if (typeof m.dish === 'string' && m.dish) li.append(textEl('p', m.dish, 'meal-dish'));
@@ -3370,7 +3716,7 @@ function nextStopBadge(r) {
   if (people.length === 0 && !shared) return null;
   const group = document.createElement('span');
   group.className = 'next-stop-badge';
-  for (const p of people) group.append(avatarEl(p.avatar_seed, 'avatar-sm'));
+  for (const p of people) group.append(avatarEl(p.avatar_seed, 'avatar-sm', p.photo));
   if (shared) group.append(pinEl());
   const names = people.map(memberName).join(t('nextstops.name_separator'));
   let label = t('nextstops.shared');
@@ -3479,7 +3825,7 @@ function nextStopPeopleLine(people) {
   list.className = 'next-stop-people';
   for (const p of people) {
     const item = document.createElement('li');
-    item.append(avatarEl(p.avatar_seed, 'avatar-sm'), textEl('span', memberName(p)));
+    item.append(avatarEl(p.avatar_seed, 'avatar-sm', p.photo), textEl('span', memberName(p)));
     list.append(item);
   }
   line.append(textEl('p', t('nextstops.people')), list);
@@ -3790,7 +4136,7 @@ function showPassport(detail) {
   const owner = p.role === 'owner';
   $('passport-name').textContent = p.name;
   $('passport-owner').textContent = ownerLine(p, false);
-  $('passport-owner').prepend(avatarEl(p.owner ? p.owner.avatar_seed : null, 'avatar-sm'));
+  $('passport-owner').prepend(avatarEl(p.owner ? p.owner.avatar_seed : null, 'avatar-sm', p.owner ? p.owner.photo : null));
   const id = String(p.id);
   for (const linkId of ['people-back', 'country-back']) {
     $(linkId).textContent = p.name;
@@ -3902,7 +4248,7 @@ bindDialog('add-person-open', 'add-person-dialog', () => {
 // A <select> option can't hold an SVG, so the chosen person's avatar sits beside it.
 function showAddPersonAvatar() {
   const user = pickUsers.find((u) => String(u.id) === $('add-person-user').value);
-  $('add-person-avatar').replaceChildren(avatarEl(user ? user.avatar_seed : null, 'avatar-sm'));
+  $('add-person-avatar').replaceChildren(avatarEl(user ? user.avatar_seed : null, 'avatar-sm', user ? user.photo : null));
 }
 
 $('add-person-user').addEventListener('change', showAddPersonAvatar);
@@ -4160,7 +4506,7 @@ function showAdminUser(u) {
   adminUser = u;
   const self = u.id === state.user.id;
   $('admin-user-title').textContent = u.display_name;
-  $('admin-user-title').prepend(avatarEl(u.avatar_seed, 'avatar-md'));
+  $('admin-user-title').prepend(avatarEl(u.avatar_seed, 'avatar-md', u.photo));
   $('au-username').textContent = u.username;
   $('au-role').textContent = u.is_admin ? t('admin.role_admin') : t('admin.role_user');
   $('au-status').textContent = u.disabled ? t('admin.status_disabled') : t('admin.status_active');
@@ -4177,6 +4523,7 @@ function showAdminUser(u) {
   $('au-enable').hidden = !u.disabled;
   $('au-promote').hidden = u.is_admin;
   $('au-demote').hidden = !u.is_admin;
+  $('au-photo-remove').hidden = !validPhoto(u.photo);
   $('au-delete').hidden = self;
   $('au-delete-self').hidden = !self;
 }
@@ -4266,6 +4613,13 @@ const CONFIRM_ACTIONS = {
     done: () => t('toast.demoted'),
     text: (name, self) => (self ? t('admin.demote_self_text') : t('admin.demote_text', { name })),
   },
+  'au-photo-remove': {
+    title: () => t('admin.photo_remove'),
+    button: () => t('admin.photo_remove'),
+    path: '/photo/delete',
+    done: () => t('toast.photo_removed'),
+    text: (name) => t('admin.photo_remove_text', { name }),
+  },
 };
 
 let confirmAction = null;
@@ -4297,6 +4651,11 @@ bindForm($('confirm-form'), async () => {
     else render();
     toast(t('toast.admin_lost'));
     return;
+  }
+  // An admin removing their own photo sees it gone from the top bar too.
+  if (action.path === '/photo/delete' && user.id === state.user.id) {
+    state.user.photo = user.photo;
+    updateUserText();
   }
   showAdminUserIfCurrent(token, user);
   toast(action.done());

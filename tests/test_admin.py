@@ -12,7 +12,7 @@ NEW = "my own chosen password"
 WEEK = 604800
 LOCKED = "Too many failed attempts. Try again in a few minutes."
 ADMIN_KEYS = {"id", "username", "display_name", "is_admin", "disabled", "locked", "must_change_password",
-              "temp_password_expired", "created_at", "last_active_at", "avatar_seed"}
+              "temp_password_expired", "created_at", "last_active_at", "avatar_seed", "photo"}
 PENDING = {"error": "You must change your password first", "code": "password_change_required",
            "password_change_required": True}
 
@@ -119,7 +119,7 @@ class MigrationServerTests(ServerTestCase):
         # the existing session still works and the admin isn't forced to change their password
         self.assertEqual(self.session_user("live-token"), {
             "id": 1, "username": "admin", "display_name": "Admin", "is_admin": True,
-            "must_change_password": False, "avatar_seed": self.seed_of(1)})
+            "must_change_password": False, "avatar_seed": self.seed_of(1), "photo": None})
         # the expired one doesn't, and its cookie is cleared
         resp = self.request("GET", "/api/session", token="old-token")
         self.assertIsNone(resp.json()["user"])
@@ -237,7 +237,7 @@ class PendingPasswordTests(AdminTestCase):
         self.assertEqual(resp.status, 200)
         self.assertEqual(resp.json()["user"], {"id": self.bob_id, "username": "bob", "display_name": "Bobby",
                                                "is_admin": False, "must_change_password": False,
-                                               "avatar_seed": self.seed_of(self.bob_id)})
+                                               "avatar_seed": self.seed_of(self.bob_id), "photo": None})
         self.assertEqual(self.login("bob", TEMP).status, 401)
         self.assertEqual(self.login("bob", NEW).status, 200)
 
@@ -353,7 +353,7 @@ class ListTests(AdminTestCase):
             "id": 1, "username": "admin", "display_name": "Admin", "is_admin": True, "disabled": False,
             "locked": False, "must_change_password": False, "temp_password_expired": False,
             "created_at": self.base_time, "last_active_at": self.base_time,  # setup logs in (contract 1b §2)
-            "avatar_seed": self.seed_of(1)})
+            "avatar_seed": self.seed_of(1), "photo": None})
         self.assertEqual(users[1]["display_name"], "<img src=x onerror=alert(1)>")
         self.assertIsNone(users[1]["last_active_at"])
         self.assertTrue(users[2]["is_admin"])
@@ -370,7 +370,7 @@ class CreateTests(AdminTestCase):
         self.assertEqual(user, {
             "id": 2, "username": "Bob", "display_name": "Bob B", "is_admin": False, "disabled": False,
             "locked": False, "must_change_password": True, "temp_password_expired": False,
-            "created_at": self.base_time + 50, "last_active_at": None, "avatar_seed": self.seed_of(2)})
+            "created_at": self.base_time + 50, "last_active_at": None, "avatar_seed": self.seed_of(2), "photo": None})
         row = self.row(2)
         self.assertEqual((row["must_change_password"], row["temp_password_set_at"], row["disabled"]),
                          (1, self.base_time + 50, 0))

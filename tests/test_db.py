@@ -41,6 +41,7 @@ VERSION_3 = db.MIGRATIONS[:3]  # the feature 2 schema
 VERSION_4 = db.MIGRATIONS[:4]  # the feature 3 schema
 VERSION_5 = db.MIGRATIONS[:5]  # the feature 4 schema
 VERSION_6 = db.MIGRATIONS[:6]  # the change 11a schema
+VERSION_7 = db.MIGRATIONS[:7]  # the change 11b schema
 
 
 class MigrationTests(DbTestCase):
@@ -53,13 +54,13 @@ class MigrationTests(DbTestCase):
 
     def test_fresh_database(self):
         db.init_schema(self.path)
-        self.assertEqual(LATEST, 7)
-        self.assertEqual(self.version(), 7)
+        self.assertEqual(LATEST, 8)
+        self.assertEqual(self.version(), 8)
         conn = db.connect(self.path)
         try:
             tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
             self.assertEqual(tables, {"users", "sessions", "passports", "passport_members", "meals",
-                                      "next_stops", "shared_next_stops", "sqlite_sequence"})
+                                      "next_stops", "shared_next_stops", "user_photos", "sqlite_sequence"})
             self.assertEqual(conn.execute("PRAGMA journal_mode").fetchone()[0], "wal")
         finally:
             conn.close()
@@ -742,7 +743,7 @@ class Version7MigrationTests(DbTestCase):
         self.assertEqual(self.version(), 6)
         self.assertEqual(self.objects(), [])
         before = self.kept_rows()
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_7)
         self.assertEqual(self.version(), 7)
         self.assertEqual(self.kept_rows(), before, "existing rows unchanged")
         self.assertEqual(self.objects(), [
@@ -762,18 +763,18 @@ class Version7MigrationTests(DbTestCase):
                          [("users", "added_by", "id", "SET NULL"), ("passports", "passport_id", "id", "CASCADE")])
 
     def test_running_twice_is_a_no_op(self):
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_7)
         self.add_entries()
         with open(self.path, "rb") as f:
             before = f.read()
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_7)
         self.assertEqual(self.version(), 7)
         with open(self.path, "rb") as f:
             self.assertEqual(f.read(), before)
 
     def test_steps_are_idempotent(self):
         """Re-run from version 6 with entries present: nothing changes, nothing fails."""
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_7)
         self.add_entries()
         entries = self.entries()
         conn = db.connect(self.path)
@@ -781,7 +782,7 @@ class Version7MigrationTests(DbTestCase):
             conn.execute("PRAGMA user_version = 6")
         finally:
             conn.close()
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_7)
         self.assertEqual(self.version(), 7)
         self.assertEqual(self.entries(), entries)
 
@@ -810,7 +811,7 @@ class Version7MigrationTests(DbTestCase):
                            "ORDER BY id"))
 
     def test_constraints_and_cascades(self):
-        db.init_schema(self.path)
+        db.init_schema(self.path, VERSION_7)
         self.add_entries()
         conn = db.connect(self.path)
         try:
@@ -842,3 +843,123 @@ class Version7MigrationTests(DbTestCase):
         finally:
             conn.close()
         self.assertEqual(self.entries(), ([], []))
+
+
+class Version8MigrationTests(DbTestCase):
+    """Schema version 8 (contract 11d section 2) applied to a change 11b (version 7) database."""
+
+    USERS = Version6MigrationTests.USERS
+
+    def setUp(self):
+        super().setUp()
+        Version6MigrationTests.populate(self, self.path)
+        db.init_schema(self.path, VERSION_7)
+        conn = db.connect(self.path)
+        try:
+            conn.execute("INSERT INTO next_stops (passport_id, user_id, country_code, created_at) VALUES (5, 1, 'FR', 10)")
+            conn.execute("INSERT INTO shared_next_stops (passport_id, country_code, added_by, created_at) "
+                         "VALUES (5, 'JP', 1, 12)")
+        finally:
+            conn.close()
+
+    def kept_rows(self):
+        return Version6MigrationTests.kept_rows(self) | {
+            "seeds": self.query("SELECT id, avatar_seed FROM users ORDER BY id"),
+            "own": self.query("SELECT id, passport_id, user_id, country_code, created_at FROM next_stops"),
+            "shared": self.query("SELECT id, passport_id, country_code, added_by, created_at FROM shared_next_stops")}
+
+    def objects(self):
+        return self.query("SELECT type, name, tbl_name FROM sqlite_master "
+                          "WHERE name LIKE '%photo%' ORDER BY name")
+
+    def columns(self):
+        return {row[1]: row for row in self.query("SELECT * FROM pragma_table_info('users')")}
+
+    def test_upgrade(self):
+        self.assertEqual(self.version(), 7)
+        self.assertEqual(self.objects(), [])
+        self.assertNotIn("photo_token", self.columns())
+        before = self.kept_rows()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 8)
+        self.assertEqual(self.kept_rows(), before, "existing rows unchanged")
+        # cid, name, type, notnull, default, pk
+        self.assertEqual(self.columns()["photo_token"][2:], ("TEXT", 0, None, 0))
+        self.assertEqual(self.objects(), [("table", "user_photos", "user_photos"),
+                                          ("index", "users_photo_token", "users")])
+        self.assertEqual(self.query("SELECT COUNT(*) FROM users WHERE photo_token IS NOT NULL"), [(0,)])
+        self.assertEqual(self.query("SELECT COUNT(*) FROM user_photos"), [(0,)])
+        self.assertEqual(self.query("SELECT \"unique\" FROM pragma_index_list('users') WHERE name = 'users_photo_token'"),
+                         [(1,)])
+        self.assertEqual(self.query("SELECT name, type, \"notnull\", pk FROM pragma_table_info('user_photos') ORDER BY cid"),
+                         [("user_id", "INTEGER", 0, 1), ("jpeg", "BLOB", 1, 0), ("updated_at", "INTEGER", 1, 0)])
+        self.assertEqual(self.query("SELECT \"table\", \"from\", \"to\", on_delete FROM "
+                                    "pragma_foreign_key_list('user_photos')"),
+                         [("users", "user_id", "id", "CASCADE")])
+
+    def add_photos(self):
+        conn = db.connect(self.path)
+        try:
+            conn.execute("INSERT INTO user_photos (user_id, jpeg, updated_at) VALUES (1, X'FFD8FFD9', 5), "
+                         "(2, X'FFD8', 6)")
+            conn.execute("UPDATE users SET photo_token = 'a' || id WHERE id IN (1, 2)")
+        finally:
+            conn.close()
+
+    def photos(self):
+        return (self.query("SELECT user_id, hex(jpeg), updated_at FROM user_photos ORDER BY user_id"),
+                self.query("SELECT id, photo_token FROM users ORDER BY id"))
+
+    def test_running_twice_is_a_no_op(self):
+        db.init_schema(self.path)
+        self.add_photos()
+        with open(self.path, "rb") as f:
+            before = f.read()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 8)
+        with open(self.path, "rb") as f:
+            self.assertEqual(f.read(), before)
+
+    def test_steps_are_idempotent(self):
+        """Re-run from version 7 with photos present: nothing changes, nothing fails."""
+        db.init_schema(self.path)
+        self.add_photos()
+        photos = self.photos()
+        conn = db.connect(self.path)
+        try:
+            conn.execute("PRAGMA user_version = 7")
+        finally:
+            conn.close()
+        db.init_schema(self.path)
+        self.assertEqual(self.version(), 8)
+        self.assertEqual(self.photos(), photos)
+
+    def test_failure_leaves_version_7(self):
+        before = self.kept_rows()
+        bad = VERSION_7 + [(8, db.MIGRATIONS[7][1] + ["NOT VALID SQL"])]
+        with self.assertRaises(sqlite3.Error):
+            db.init_schema(self.path, bad)
+        self.assertEqual(self.version(), 7)
+        self.assertEqual(self.kept_rows(), before)
+        self.assertEqual(self.objects(), [], "CREATE TABLE and INDEX rolled back with the rest")
+        self.assertNotIn("photo_token", self.columns(), "ALTER TABLE rolled back with the rest")
+
+    def test_constraints_and_cascades(self):
+        db.init_schema(self.path)
+        self.add_photos()
+        conn = db.connect(self.path)
+        try:
+            for sql in ("INSERT INTO user_photos (user_id, jpeg, updated_at) VALUES (1, X'00', 1)",  # one per user
+                        "INSERT INTO user_photos (user_id, jpeg, updated_at) VALUES (99, X'00', 1)",  # no such user
+                        "INSERT INTO user_photos (user_id, jpeg, updated_at) VALUES (3, NULL, 1)",
+                        "UPDATE users SET photo_token = 'a1' WHERE id = 3"):  # tokens are unique
+                with self.subTest(sql=sql):
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        conn.execute(sql)
+            conn.execute("UPDATE users SET photo_token = NULL WHERE id IN (3, 4)")  # many NULLs are fine
+            conn.execute("DELETE FROM passport_members WHERE user_id = 2")
+            conn.execute("DELETE FROM passports WHERE owner_id = 2")
+            conn.execute("DELETE FROM users WHERE id = 2")
+        finally:
+            conn.close()
+        self.assertEqual(self.photos()[0], [(1, "FFD8FFD9", 5)], "the photo goes with the user")

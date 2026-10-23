@@ -278,3 +278,51 @@ class Lockout:
             entry.failures.clear()
             if entry.in_flight == 0:
                 del self.users[user_key]
+
+
+# --- Photo upload limit (contract 11d §6) ---
+
+class UploadLimiter:
+    """Per-user sliding-window count of photo upload attempts, guarded by one lock.
+
+    try_record() is the atomic prune + check + append. Keys are user ids; the
+    table is in memory, so a restart starts everyone afresh.
+    """
+
+    def __init__(self, clock, limit=10, window=3600, max_keys=10000):
+        self.clock = clock
+        self.limit = limit
+        self.window = window
+        self.max_keys = max_keys
+        self.lock = threading.Lock()
+        self.stamps = {}  # user id -> attempt times, oldest first, at most `limit`
+
+    def _prune(self, now):
+        for key in list(self.stamps):
+            kept = [t for t in self.stamps[key] if now - t < self.window]
+            if kept:
+                self.stamps[key] = kept
+            else:
+                del self.stamps[key]
+
+    def try_record(self, key):
+        """Records an attempt and returns True, or False (nothing recorded) if `key` is at the limit."""
+        now = self.clock()
+        with self.lock:
+            self._prune(now)
+            stamps = self.stamps.get(key)
+            if stamps is not None and len(stamps) >= self.limit:
+                return False
+            if stamps is None:
+                if len(self.stamps) >= self.max_keys:
+                    # Evict the key whose latest attempt is oldest.
+                    del self.stamps[min(self.stamps, key=lambda k: self.stamps[k][-1])]
+                stamps = self.stamps[key] = []
+            stamps.append(now)
+            del stamps[:-self.limit]
+            return True
+
+    def clear(self, key):
+        """After an account is deleted: its id may be reused by a new account."""
+        with self.lock:
+            self.stamps.pop(key, None)

@@ -21,7 +21,7 @@ class DisplayNameTests(ServerTestCase):
         self.assertEqual(resp.status, 200)
         self.assertEqual(resp.json(), {"user": {"id": 1, "username": "admin", "display_name": "Caf\u00e9 Crew",
                                                 "is_admin": True,
-                                                "must_change_password": False, "avatar_seed": self.seed_of(1)},
+                                                "must_change_password": False, "avatar_seed": self.seed_of(1), "photo": None},
                                        "default_passport_id": 1})
         self.assertEqual(self.session_user(self.token)["display_name"], "Caf\u00e9 Crew")
 

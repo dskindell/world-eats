@@ -105,6 +105,11 @@ MESSAGES = {
     "personal_no_shared": "Personal passports have no shared next stops",
     "next_stop_done": "You've already eaten here",
     "next_stop_complete": "Everyone has already eaten here",
+    # Profile photos
+    "content_type_jpeg": "Content-Type must be image/jpeg",
+    "invalid_image": "That photo couldn't be read. Try another photo.",
+    "photo_not_found": "Photo not found",
+    "too_many_uploads": "Too many photo changes. Try again later.",
 }
 
 

@@ -427,7 +427,7 @@ class DerivedTests(MealTestCase):
         self.assertEqual(set(meal), MEAL_KEYS)
         self.assertEqual(set(meal["user"]), PERSON_KEYS)
         self.assertEqual(meal, {"id": meal["id"], "user": {"id": 1, "username": "admin", "display_name": "Admin",
-                                                           "inactive": False, "avatar_seed": self.seed_of(1)},
+                                                           "inactive": False, "avatar_seed": self.seed_of(1), "photo": None},
                                 "eaten_on": DATE, "dish": "Ceviche", "place": "La Mar", "rating": 5,
                                 "notes": "a\nb", "mine": True})
         listing = self.countries_of(self.pid)
@@ -515,7 +515,7 @@ class DerivedTests(MealTestCase):
                          (True, True, "2026-12-01"))
         carol_meal = next(m for m in detail["meals"] if m["user"]["id"] == carol)
         self.assertEqual(carol_meal["user"], {"id": carol, "username": "carol", "display_name": "Carol",
-                                              "inactive": True, "avatar_seed": self.seed_of(carol)})
+                                              "inactive": True, "avatar_seed": self.seed_of(carol), "photo": None})
         self.assertEqual(self.meal_count("user_id = ?", (carol,)), 1, "disabling keeps meals")
 
         self.assertEqual(self.admin_action(carol, "enable").status, 200)
@@ -609,7 +609,7 @@ class EditDeleteTests(MealTestCase):
         self.assertEqual(resp.status, 200, resp)
         self.assertEqual(resp.json(), {"meal": {
             "id": meal_id, "user": {"id": 1, "username": "admin", "display_name": "Admin", "inactive": False,
-                                    "avatar_seed": self.seed_of(1)},
+                                    "avatar_seed": self.seed_of(1), "photo": None},
             "eaten_on": "2026-10-01", "dish": "Lomo", "place": "Home", "rating": 5, "notes": "Better\nstill",
             "mine": True}})
         self.assertEqual(self.query("SELECT country_code, created_at, updated_at FROM meals WHERE id = ?",
