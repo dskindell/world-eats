@@ -44,11 +44,13 @@ The screenshots use sample users (Alex and Sam).
 ## Features
 
 - **Accounts without sign-up.** The first visit to a fresh install shows a setup page that creates the first admin. After that, admins create, disable, delete and promote users, reset passwords and unlock locked accounts. Sessions last 30 days and can run on several devices; "Log out everywhere" is in account settings.
+- **Avatars and profile photos.** Every account gets a generated avatar (a symmetric pattern; "New pattern" in account settings picks another). You can upload a profile photo instead: crop it in the browser (drag and zoom, with a circle preview), and it's saved as a small 256 x 256 JPEG with all metadata (camera, GPS) stripped by the server. Avatars and photos show beside names everywhere and are visible to everyone logged in. You can replace or remove your photo; admins can remove anyone's.
 - **Passports.** A passport is one challenge. Every account gets a personal passport (named "My passport"; it can't be deleted and can't have participants). You can also create shared passports, up to 50 owned per user and 20 people each. *Participants* each log their own meals; *viewers* can see everything but can't log. Only the owner renames or deletes a passport or changes who is in it. You can choose which passport the app opens to.
 - **Meals.** Log the date, what you ate, where, a 1-5 star rating and notes (all optional except the date). You can log several meals per country, and edit or delete your own. A country counts as done for you once you have logged a meal there, and is *fully complete* when every active participant has.
-- **Search, sort and filters.** Search ignores case and accents and matches country names, alternative names (for example "Burma" finds Myanmar) and everyone's meals. Sort by name, region, date completed, rating or progress; filter by status, who has done it, region and minimum rating. The state is kept in the page address.
+- **Search, sort and filters.** Search ignores case and accents and matches country names, alternative names (for example "Burma" finds Myanmar) and everyone's meals. Sort by name, region, date completed, rating or progress; filter by status, who has done it, region, minimum rating and next stops. The state is kept in the page address.
 - **Random pick.** "Pick a country" chooses at random among the countries you haven't done that match the current search and filters, and reveals it on an airport split-flap departure board (it respects the browser's reduced-motion setting). The pick isn't saved.
-- **World map.** Equal Earth projection, drawn from bundled Natural Earth data. Countries are coloured by status: in a shared passport each participant sees *Not started*, *Your turn* (someone else has eaten there, you haven't), *Waiting on others* (you have, someone else hasn't) and *Fully complete*, and the list and filters use the same states. Tap one to see a summary card, and zoom with pinch, mouse wheel and drag, or the +, - and Reset buttons. Tiny countries appear as dots. A List / Map switch sits under the search bar.
+- **Next stops.** Keep a list of countries to try next: each participant has their own "My next stops", and a shared passport also has "Our next stops" that anyone in it can change (entries show who added them). Add or remove countries from the country page, the map card or a random pick. Logging a meal takes a country off your own list, and a fully complete country leaves the shared one. The list shows who has a country on their next stops, and a filter narrows the list, map and random pick to mine, ours or anyone's.
+- **World map.** Equal Earth projection, drawn from bundled Natural Earth data. Countries are coloured by status: in a shared passport each participant sees *Not started*, *Your turn* (someone else has eaten there, you haven't), *Waiting on others* (you have, someone else hasn't) and *Fully complete*, and the list and filters use the same states. Tap one to see a summary card, and zoom with pinch, mouse wheel and drag, or the +, - and Reset buttons. Tiny countries appear as dots. Countries on someone's next stops get a push pin with that person's avatar (an orange pin for the shared list); a Pins switch hides them. A List / Map switch sits under the search bar.
 
 ## Known limitations
 
@@ -62,7 +64,7 @@ The screenshots use sample users (Alex and Sam).
 Requirements: Docker with Compose. Use a [release](https://github.com/dskindell/world-eats/releases) rather than the tip of `main`: `main` can already name the next version's image before it's published.
 
 ```bash
-git clone --branch v0.2.0-beta https://github.com/dskindell/world-eats.git && cd world-eats
+git clone --branch v0.3.0-beta https://github.com/dskindell/world-eats.git && cd world-eats
 mkdir -m 700 data      # owned by you; compose runs the app as UID/GID 1000 to match
 docker compose up -d
 ```
@@ -77,7 +79,7 @@ Open the app and create the first account on the setup page. **Complete setup be
 
 | Tag | Points at |
 |---|---|
-| `0.2.0-beta` (any exact version) | That release, never changed |
+| `0.3.0-beta` (any exact version) | That release, never changed |
 | `beta` | The newest beta release (it stays on the last beta once stable releases exist) |
 | `latest` | The newest stable release (none yet) |
 
@@ -87,6 +89,8 @@ The compose file names its release's exact version. To upgrade, [back up](#backu
 git fetch --tags && git checkout vX.Y.Z
 docker compose pull && docker compose up -d
 ```
+
+A new release may update the database when it first starts; this happens automatically. Going back to an older release afterwards isn't supported, which is one more reason to back up first.
 
 ### Building from source
 
@@ -218,6 +222,7 @@ Ideas that might be explored one day. They're not commitments, and there's no ti
 
 - `app/server.py` - HTTP server, routing and request handling.
 - `app/auth.py`, `app/config.py`, `app/db.py`, `app/countries.py`, `app/meals.py`, `app/passports.py`, `app/search.py` - validation, passwords and lockout; configuration; SQLite schema and migrations; the country list; meals; passports; search.
+- `app/photos.py` - checks uploaded profile photos and rebuilds them without metadata.
 - `app/errors.py` - the server's error codes and their English messages.
 - `app/static/` - frontend (vanilla HTML/JS/CSS, no build step), the interface text in `strings-en.js`, and the generated `map.json`.
 - `app/Dockerfile` - the image (Python 3.12 slim, runs as a non-root user).

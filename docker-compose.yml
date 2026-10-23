@@ -2,7 +2,7 @@ name: world-eats
 
 services:
   world-eats:
-    image: ghcr.io/dskindell/world-eats:0.2.0-beta
+    image: ghcr.io/dskindell/world-eats:0.3.0-beta
     container_name: world-eats
     restart: unless-stopped
     # Run as the host user that owns ./data (the image default, 10001, can't write to it).
